@@ -1,7 +1,7 @@
 'use strict';
 
 const {
-  app, BrowserWindow, WebContentsView, ipcMain, session, Menu, dialog, clipboard, screen
+  app, BrowserWindow, BrowserView, WebContentsView, ipcMain, session, Menu, dialog, clipboard, screen
 } = require('electron');
 const path = require('path');
 const fs = require('fs');
@@ -10,6 +10,37 @@ const crypto = require('crypto');
 const COLORS = ['#2563EB', '#0E8A7E', '#3F8A2A', '#B7791F', '#D23B3B', '#B23A82', '#6D4AD8', '#56657A'];
 const HOME_URL = 'https://www.google.com';
 const isMac = process.platform === 'darwin';
+
+// Electron 30+ has WebContentsView. The Windows 7 build runs on Electron 22,
+// which only has BrowserView, so all view handling goes through these helpers.
+const modernViews = parseInt(process.versions.electron, 10) >= 30 && typeof WebContentsView === 'function';
+const HIDDEN = { x: 0, y: 0, width: 0, height: 0 };
+
+function makeView(webPreferences) {
+  return modernViews ? new WebContentsView({ webPreferences }) : new BrowserView({ webPreferences });
+}
+
+function attachView(view) {
+  if (modernViews) win.contentView.addChildView(view); else win.addBrowserView(view);
+}
+
+function detachView(view) {
+  if (modernViews) win.contentView.removeChildView(view); else win.removeBrowserView(view);
+}
+
+function showView(view, bounds) {
+  if (modernViews) {
+    view.setVisible(!!bounds);
+    if (bounds) view.setBounds(bounds);
+  } else {
+    view.setBounds(bounds || HIDDEN);
+  }
+}
+
+function destroyContents(wc) {
+  if (typeof wc.close === 'function') wc.close();
+  else if (typeof wc.destroy === 'function') wc.destroy();
+}
 
 let win = null;
 let chromeHeight = 97;
@@ -176,18 +207,16 @@ function createView(tab) {
   const ses = session.fromPartition(partitionOf(tab.sessionId));
   hardenSession(ses, tab.sessionId);
 
-  const view = new WebContentsView({
-    webPreferences: {
-      session: ses,
-      sandbox: true,
-      contextIsolation: true,
-      nodeIntegration: false,
-      spellcheck: true
-    }
+  const view = makeView({
+    session: ses,
+    sandbox: true,
+    contextIsolation: true,
+    nodeIntegration: false,
+    spellcheck: true
   });
   view.setBackgroundColor('#FFFFFF');
-  view.setVisible(false);
-  win.contentView.addChildView(view);
+  attachView(view);
+  showView(view, null);
 
   const wc = view.webContents;
   const n = nav(wc);
@@ -290,16 +319,15 @@ function layout() {
   const [width, height] = win.getContentSize();
   for (const [id, view] of views) {
     const show = id === state.activeId && !overlay;
-    view.setVisible(show);
-    if (show) view.setBounds({ x: 0, y: chromeHeight, width, height: Math.max(0, height - chromeHeight) });
+    showView(view, show ? { x: 0, y: chromeHeight, width, height: Math.max(0, height - chromeHeight) } : null);
   }
 }
 
 function unmount(id) {
   const view = views.get(id);
   if (view) {
-    if (win && !win.isDestroyed()) win.contentView.removeChildView(view);
-    try { view.webContents.close(); } catch { /* already gone */ }
+    if (win && !win.isDestroyed()) detachView(view);
+    try { destroyContents(view.webContents); } catch { /* already gone */ }
   }
   views.delete(id);
   live.delete(id);
