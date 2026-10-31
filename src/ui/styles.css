@@ -118,6 +118,7 @@ svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width:
   width: 12px;
   height: 12px;
   border-radius: 50%;
+  border: 2px solid rgba(127, 127, 127, 0.3);
   border: 2px solid color-mix(in srgb, var(--c) 25%, transparent);
   border-top-color: var(--c);
   animation: spin 0.8s linear infinite;
@@ -140,6 +141,7 @@ svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width:
   font-size: 11px;
   font-weight: 600;
   color: var(--c);
+  background: rgba(127, 127, 127, 0.15);
   background: color-mix(in srgb, var(--c) 13%, transparent);
 }
 .shared svg { width: 12px; height: 12px; stroke-width: 1.8; }
@@ -231,6 +233,7 @@ svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width:
 }
 #omnibox:focus-within {
   border-color: var(--role);
+  box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.22);
   box-shadow: 0 0 0 3px color-mix(in srgb, var(--role) 22%, transparent);
 }
 #role-chip {
@@ -328,6 +331,7 @@ dialog h2 { margin: 0; font-size: 17px; font-weight: 600; }
 .field input[type="text"]:focus-visible, .field select:focus-visible, .ws-save input:focus-visible {
   outline: none;
   border-color: var(--role);
+  box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.22);
   box-shadow: 0 0 0 3px color-mix(in srgb, var(--role) 22%, transparent);
 }
 
