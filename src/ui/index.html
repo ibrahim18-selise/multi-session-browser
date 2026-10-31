@@ -1,0 +1,116 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; img-src 'self' data: https: http:; style-src 'self'; script-src 'self'">
+  <title>Multi-Session Browser</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <header id="chrome">
+    <div id="tabstrip">
+      <div id="tabs" role="tablist" aria-label="Open tabs"></div>
+      <button id="new-tab" class="icon-btn" type="button" aria-label="New tab" title="New tab">
+        <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 3v10M3 8h10"/></svg>
+      </button>
+      <div class="grow"></div>
+      <button id="ws-btn" class="text-btn" type="button">Workspaces</button>
+    </div>
+
+    <div id="toolbar">
+      <button id="back" class="icon-btn" type="button" aria-label="Back" title="Back">
+        <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M10 3L5 8l5 5"/></svg>
+      </button>
+      <button id="forward" class="icon-btn" type="button" aria-label="Forward" title="Forward">
+        <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M6 3l5 5-5 5"/></svg>
+      </button>
+      <button id="reload" class="icon-btn" type="button" aria-label="Reload" title="Reload">
+        <svg class="i-reload" viewBox="0 0 16 16" aria-hidden="true"><path d="M13 8a5 5 0 1 1-1.6-3.7M13 2.5v3h-3"/></svg>
+        <svg class="i-stop" viewBox="0 0 16 16" aria-hidden="true"><path d="M4 4l8 8M12 4l-8 8"/></svg>
+      </button>
+
+      <div id="omnibox">
+        <button id="role-chip" type="button" title="Rename or recolor this tab"></button>
+        <input id="address" type="text" spellcheck="false" autocomplete="off" placeholder="Search or enter an address" aria-label="Address">
+      </div>
+
+      <button id="devtools" class="icon-btn" type="button" aria-label="Developer tools for this tab" title="Developer tools for this tab">
+        <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M5.5 4.5L2 8l3.5 3.5M10.5 4.5L14 8l-3.5 3.5"/></svg>
+      </button>
+      <button id="tab-menu" class="icon-btn" type="button" aria-label="Tab options" title="Tab options">
+        <svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="3.5" r=".6"/><circle cx="8" cy="8" r=".6"/><circle cx="8" cy="12.5" r=".6"/></svg>
+      </button>
+    </div>
+    <div id="band"></div>
+  </header>
+
+  <main id="empty" hidden>
+    <div class="empty-inner">
+      <div class="empty-mark" aria-hidden="true"><span></span><span></span><span></span></div>
+      <h1>Sign in as several people at once</h1>
+      <p>Every tab gets its own cookies and storage. Open one as an admin, another as a customer, and switch between them without logging out.</p>
+      <button id="empty-open" class="primary" type="button">Open a tab</button>
+      <p class="hint" id="empty-hint"></p>
+    </div>
+  </main>
+
+  <div id="backdrop" hidden><img id="shot" alt=""></div>
+
+  <dialog id="tab-dialog" aria-labelledby="td-title">
+    <form id="td-form" method="dialog">
+      <h2 id="td-title">New tab</h2>
+
+      <label class="field">
+        <span>Who is signed in here</span>
+        <input id="td-name" type="text" maxlength="40" placeholder="Admin, Reviewer, Customer" required>
+      </label>
+
+      <fieldset class="field">
+        <legend>Color</legend>
+        <div id="td-swatches" class="swatches"></div>
+      </fieldset>
+
+      <label class="field" id="td-url-row">
+        <span>Start at</span>
+        <input id="td-url" type="text" spellcheck="false" placeholder="https://app.example.com">
+      </label>
+
+      <label class="field" id="td-session-row">
+        <span>Sign-in</span>
+        <select id="td-session"></select>
+        <small>A new sign-in starts logged out. Sharing one keeps you logged in as that tab.</small>
+      </label>
+
+      <p id="td-shared-note" class="note" hidden></p>
+
+      <div class="actions">
+        <button type="button" class="ghost" data-close>Cancel</button>
+        <button type="submit" class="primary" id="td-submit">Open tab</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="ws-dialog" aria-labelledby="ws-title">
+    <div class="ws-body">
+      <h2 id="ws-title">Workspaces</h2>
+      <p class="note">A workspace reopens a set of tabs with their sign-ins on this computer. Exported files hold tab names, colors and addresses only, never cookies or passwords.</p>
+
+      <form id="ws-save-form" class="ws-save">
+        <input id="ws-name" type="text" maxlength="40" placeholder="Name for your open tabs" aria-label="Workspace name">
+        <button type="submit" class="primary">Save open tabs</button>
+      </form>
+
+      <div id="ws-list"></div>
+
+      <div class="actions">
+        <button type="button" class="ghost" id="ws-import">Import from file</button>
+        <button type="button" class="ghost" data-close>Done</button>
+      </div>
+    </div>
+  </dialog>
+
+  <div id="toast" role="status" aria-live="polite"></div>
+
+  <script src="app.js"></script>
+</body>
+</html>
