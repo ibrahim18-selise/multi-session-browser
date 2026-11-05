@@ -428,6 +428,9 @@ svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width:
 .bm-chip:hover { background: var(--hover); }
 .bm-chip span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .bm-empty { color: var(--faint); font-size: 12px; padding-left: 4px; }
+.bm-chip.folder svg { width: 15px; height: 15px; color: var(--accent); }
+.bm-sep { width: 1px; height: 16px; margin: 0 4px; background: var(--line); flex: none; }
+.drop-target { background: var(--accent-soft) !important; box-shadow: inset 0 0 0 1px var(--accent); }
 
 .fav { width: 16px; height: 16px; border-radius: 4px; flex: none; }
 .fav-letter {
@@ -630,6 +633,22 @@ body.no-tabs { --role: #4A6FA5; --on-role: #FFFFFF; --role-soft: rgba(74, 111, 1
 .mini:hover { background: var(--press); color: var(--ink); }
 .mini.warn:hover { color: var(--danger); }
 .item.clickable { cursor: pointer; }
+
+.folder { margin-bottom: 4px; }
+.folder-head { display: flex; align-items: center; gap: 8px; height: 36px; padding: 0 6px; border-radius: 9px; cursor: default; }
+.folder-head:hover { background: var(--hover); }
+.folder-head .chev { display: grid; place-items: center; width: 16px; color: var(--faint); transition: transform 120ms ease; }
+.folder-head .chev svg { width: 12px; height: 12px; stroke-width: 2; }
+.folder.open .chev { transform: rotate(90deg); }
+.folder-ico { display: grid; place-items: center; color: var(--accent); }
+.folder-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 620; }
+.folder-head .count { min-width: 20px; padding: 0 6px; border-radius: 999px; background: var(--sunken); color: var(--muted); font-size: 11px; font-weight: 650; text-align: center; }
+.folder-head .acts { display: flex; gap: 2px; opacity: 0; }
+.folder-head:hover .acts, .folder-head:focus-within .acts { opacity: 1; }
+.folder-body { padding-left: 18px; }
+.folder-empty { margin: 2px 0 8px; padding: 6px 8px; color: var(--faint); font-size: 12px; }
+.tile .folder-tile { color: var(--accent); }
+.tile .folder-tile svg { width: 22px; height: 22px; }
 
 .clip { margin-bottom: 10px; border: 1px solid var(--line-soft); border-radius: 12px; background: var(--raised); overflow: hidden; }
 .clip-img { display: block; width: 100%; max-height: 200px; object-fit: cover; object-position: top; background: var(--sunken); cursor: zoom-in; border-bottom: 1px solid var(--line-soft); }

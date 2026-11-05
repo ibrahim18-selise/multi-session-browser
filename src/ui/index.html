@@ -190,6 +190,30 @@
     </form>
   </dialog>
 
+  <dialog id="bm-dialog" aria-labelledby="bmd-title">
+    <form id="bmd-form" method="dialog">
+      <h2 id="bmd-title">Bookmark added</h2>
+      <label class="field">
+        <span>Name</span>
+        <input id="bmd-name" type="text" maxlength="300">
+      </label>
+      <label class="field">
+        <span>Folder</span>
+        <select id="bmd-folder"></select>
+      </label>
+      <label class="field" id="bmd-new-row" hidden>
+        <span>New folder name</span>
+        <input id="bmd-new" type="text" maxlength="60" placeholder="Work, Testing, Clients">
+      </label>
+      <div class="actions">
+        <button type="button" class="danger-btn" id="bmd-remove">Remove</button>
+        <span class="grow"></span>
+        <button type="button" class="ghost" data-close>Cancel</button>
+        <button type="submit" class="primary">Done</button>
+      </div>
+    </form>
+  </dialog>
+
   <dialog id="text-dialog" aria-labelledby="txt-title">
     <form id="txt-form" method="dialog">
       <h2 id="txt-title">Rename</h2>
