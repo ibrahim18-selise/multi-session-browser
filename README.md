@@ -138,6 +138,16 @@ rm -rf "/Applications/Multi-Session Browser.app"
 - Deleting a folder asks whether to keep its bookmarks (they move to the bookmarks bar) or delete them too.
 - Folders also show on the new tab page.
 
+### AI assistant side panel
+- Click the sparkle button in the toolbar (or press Ctrl+Shift+A) to open Claude, ChatGPT or Gemini next to the page you are on. Switch between them with the buttons at the top of the panel.
+- Each assistant is its real website with its own sign-in. Sign in once and it stays signed in, separate from your tabs, and your chats keep running while you move between tabs.
+- Send page link puts the page's title and address in the message box. Send selection adds the text you selected on the page. Send screenshot attaches a picture of the page. Nothing is sent until you press Enter yourself.
+- Right-click selected text on any page and choose "Ask Claude about this" (or whichever assistant you use last). In the screenshot editor, Send to AI attaches your marked-up image.
+- Drag the left edge of the side panel to make it wider or narrower. The browser remembers the width.
+- The More menu in the panel starts a new chat, opens the assistant in a full tab, or signs you out of it.
+- The assistant can read only what you send it. It cannot click or browse pages for you.
+- If Google sign-in refuses to work inside the panel, sign in with email instead. On Windows 7 the assistant websites may not support the older engine.
+
 ### Look and feel
 - Four themes from Claude's theme set: Arctic Frost (light) and Ocean Depths (dark) by default, following your computer's light or dark setting, plus Modern Minimalist and Midnight Galaxy. Change it in the menu, under Appearance.
 - Developer tools per tab (F12 on Windows, Alt+Cmd+I on Mac), plus "Inspect element" on right click.
@@ -152,6 +162,7 @@ Ctrl is Cmd on Mac.
 - Ctrl+Tab and Ctrl+Shift+Tab switch tabs, Ctrl+1 to Ctrl+8 jump to a tab, Ctrl+9 last tab
 - Ctrl+D bookmark this page, Ctrl+Shift+B bookmarks bar, Ctrl+Shift+O bookmarks panel
 - Ctrl+H history (Cmd+Y on Mac), Ctrl+Shift+Y clipboard, Ctrl+Shift+X screenshot
+- Ctrl+Shift+A AI assistant
 - Ctrl+Shift+S workspaces
 - Ctrl+= and Ctrl+- zoom, Ctrl+0 actual size
 - Double-click a tab to rename or recolor it, middle-click to close, drag to reorder

@@ -1,7 +1,7 @@
 {
   "name": "multi-session-browser",
   "productName": "Multi-Session Browser",
-  "version": "2.2.0",
+  "version": "2.3.0",
   "description": "A tabbed browser where every tab can have its own sign-in. Web edition.",
   "author": "Multi-Session Browser",
   "license": "UNLICENSED",
