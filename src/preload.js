@@ -2,7 +2,7 @@
 
 const { contextBridge, ipcRenderer } = require('electron');
 
-const CHANNELS = new Set(['state', 'ui', 'toast']);
+const CHANNELS = new Set(['state', 'ui', 'toast', 'pw-offer', 'pw-available']);
 
 contextBridge.exposeInMainWorld('msb', {
   cmd: (name, ...args) => ipcRenderer.invoke('cmd', name, ...args),

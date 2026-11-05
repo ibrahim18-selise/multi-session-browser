@@ -1,14 +1,26 @@
 'use strict';
 
 const {
-  app, BrowserWindow, BrowserView, WebContentsView, ipcMain, session, Menu, dialog, clipboard, screen
+  app, BrowserWindow, BrowserView, WebContentsView, ipcMain, session, Menu, dialog, clipboard, screen,
+  nativeImage, nativeTheme, safeStorage, systemPreferences
 } = require('electron');
 const path = require('path');
 const fs = require('fs');
+const os = require('os');
 const crypto = require('crypto');
+const { execFile } = require('child_process');
 
 const COLORS = ['#2563EB', '#0E8A7E', '#3F8A2A', '#B7791F', '#D23B3B', '#B23A82', '#6D4AD8', '#56657A'];
 const HOME_URL = 'https://www.google.com';
+const NEWTAB = 'msb:newtab';
+const SEARCH_ENGINES = {
+  google: { name: 'Google', url: 'https://www.google.com/search?q=' },
+  bing: { name: 'Bing', url: 'https://www.bing.com/search?q=' },
+  duckduckgo: { name: 'DuckDuckGo', url: 'https://duckduckgo.com/?q=' },
+  brave: { name: 'Brave Search', url: 'https://search.brave.com/search?q=' }
+};
+const THEMES = ['system', 'arctic', 'ocean', 'minimal', 'galaxy'];
+const DEFAULT_SETTINGS = { searchEngine: 'google', theme: 'system', bookmarksBar: true, offerPasswords: true };
 const isMac = process.platform === 'darwin';
 
 // Electron 30+ has WebContentsView. The Windows 7 build runs on Electron 22,
@@ -45,13 +57,14 @@ function destroyContents(wc) {
 let win = null;
 let chromeHeight = 97;
 let overlay = false;
+let panelWidth = 0;
 const views = new Map();   // tabId -> WebContentsView
 const live = new Map();    // tabId -> { title, favicon, loading, canGoBack, canGoForward }
 const loaded = new Set();  // tabIds whose page has been requested
 const hardened = new WeakSet();
 const permissionDecisions = new Map();
 
-let state = { tabs: [], activeId: null, workspaces: [], bounds: null };
+let state = { tabs: [], activeId: null, workspaces: [], bounds: null, bookmarks: [], settings: Object.assign({}, DEFAULT_SETTINGS) };
 
 /* ---------- helpers ---------- */
 
@@ -64,11 +77,11 @@ const partitionOf = (sessionId) => 'persist:' + sessionId;
 
 function normalizeUrl(input) {
   const s = String(input || '').trim();
-  if (!s) return HOME_URL;
+  if (!s || s === NEWTAB) return NEWTAB;
   if (/^(https?|file|about):/i.test(s)) return s;
   if (/^localhost(:\d+)?([/?#]|$)/i.test(s) || /^\d{1,3}(\.\d{1,3}){3}(:\d+)?([/?#]|$)/.test(s)) return 'http://' + s;
   if (!/\s/.test(s) && /^[^/]+\.[a-z][a-z0-9-]*(:\d+)?([/?#]|$)/i.test(s)) return 'https://' + s;
-  return 'https://www.google.com/search?q=' + encodeURIComponent(s);
+  return searchUrl(s);
 }
 
 function httpOnly(url) {
@@ -120,6 +133,15 @@ function loadState() {
     state.activeId = typeof raw.activeId === 'string' ? raw.activeId : null;
     state.workspaces = Array.isArray(raw.workspaces) ? raw.workspaces : [];
     state.bounds = raw.bounds || null;
+    state.bookmarks = (Array.isArray(raw.bookmarks) ? raw.bookmarks : [])
+      .filter((b) => b && typeof b.url === 'string' && /^https?:/i.test(b.url))
+      .map((b) => ({
+        id: typeof b.id === 'string' ? b.id : uid(), url: b.url, title: String(b.title || b.url).slice(0, 300),
+        favicon: typeof b.favicon === 'string' ? b.favicon : null, created: Number(b.created) || Date.now()
+      }));
+    state.settings = Object.assign({}, DEFAULT_SETTINGS, raw.settings && typeof raw.settings === 'object' ? raw.settings : {});
+    if (!SEARCH_ENGINES[state.settings.searchEngine]) state.settings.searchEngine = 'google';
+    if (THEMES.indexOf(state.settings.theme) < 0) state.settings.theme = 'system';
   } catch { /* first run or unreadable file: start fresh */ }
 }
 
@@ -131,7 +153,9 @@ function saveState(now = false) {
       tabs: state.tabs.map(({ id, sessionId, name, color, url }) => ({ id, sessionId, name, color, url })),
       activeId: state.activeId,
       workspaces: state.workspaces,
-      bounds: state.bounds
+      bounds: state.bounds,
+      bookmarks: state.bookmarks,
+      settings: state.settings
     };
     try {
       const tmp = statePath() + '.tmp';
@@ -148,7 +172,11 @@ function push() {
     tabs: state.tabs.map((t) => ({ ...t, ...(live.get(t.id) || {}) })),
     activeId: state.activeId,
     workspaces: state.workspaces.map((w) => ({ name: w.name, count: w.tabs.length, savedAt: w.savedAt })),
-    colors: COLORS
+    colors: COLORS,
+    bookmarks: state.bookmarks,
+    settings: state.settings,
+    engines: engineNames(),
+    auth: authInfo()
   });
 }
 
@@ -212,7 +240,8 @@ function createView(tab) {
     sandbox: true,
     contextIsolation: true,
     nodeIntegration: false,
-    spellcheck: true
+    spellcheck: true,
+    preload: path.join(__dirname, 'page-preload.js')
   });
   view.setBackgroundColor('#FFFFFF');
   attachView(view);
@@ -227,6 +256,7 @@ function createView(tab) {
     if (!t) return;
     t.url = wc.getURL();
     saveState();
+    recordVisit(t.url, wc.getTitle());
     setLive(tab.id, { canGoBack: n.canBack(), canGoForward: n.canForward() });
   };
 
@@ -234,7 +264,7 @@ function createView(tab) {
   wc.on('did-stop-loading', () => setLive(tab.id, { loading: false }));
   wc.on('did-navigate', onNavigate);
   wc.on('did-navigate-in-page', onNavigate);
-  wc.on('page-title-updated', (_e, title) => setLive(tab.id, { title }));
+  wc.on('page-title-updated', (_e, title) => { updateTitle(wc.getURL(), title); setLive(tab.id, { title }); });
   wc.on('page-favicon-updated', (_e, icons) => setLive(tab.id, { favicon: (icons && icons[0]) || null }));
   wc.on('did-fail-load', (_e, code, desc, url, isMainFrame) => {
     if (isMainFrame && code !== -3) toast(`Could not open ${url || 'the page'} (${desc})`);
@@ -311,6 +341,7 @@ function ensureLoaded(id) {
   const view = views.get(id);
   if (!tab || !view || loaded.has(id)) return;
   loaded.add(id);
+  if (tab.url === NEWTAB) return;
   view.webContents.loadURL(tab.url || HOME_URL).catch(() => { /* reported via did-fail-load */ });
 }
 
@@ -318,8 +349,8 @@ function layout() {
   if (!win || win.isDestroyed()) return;
   const [width, height] = win.getContentSize();
   for (const [id, view] of views) {
-    const show = id === state.activeId && !overlay;
-    showView(view, show ? { x: 0, y: chromeHeight, width, height: Math.max(0, height - chromeHeight) } : null);
+    const show = id === state.activeId && !overlay && !isNewTab(id);
+    showView(view, show ? { x: 0, y: chromeHeight, width: Math.max(0, width - panelWidth), height: Math.max(0, height - chromeHeight) } : null);
   }
 }
 
@@ -414,7 +445,7 @@ function duplicateTab(id) {
   const t = getTab(id);
   if (!t) return;
   const view = views.get(id);
-  const url = (view && view.webContents.getURL()) || t.url;
+  const url = isNewTab(id) ? NEWTAB : (view && view.webContents.getURL()) || t.url;
   openTab({ url, name: t.name, color: t.color, sessionId: t.sessionId }, true);
 }
 
@@ -424,6 +455,9 @@ function navigate(id, input) {
   if (!t || !view) return;
   t.url = normalizeUrl(input);
   loaded.add(id);
+  layout();
+  push();
+  if (t.url === NEWTAB) { saveState(); return; }
   view.webContents.loadURL(t.url).catch(() => { /* reported via did-fail-load */ });
   view.webContents.focus();
   saveState();
@@ -484,14 +518,14 @@ function showTabMenu(id) {
 async function setOverlay(on) {
   overlay = !!on;
   let shot = null;
-  if (overlay && loaded.has(state.activeId)) {
+  if (overlay && loaded.has(state.activeId) && !isNewTab(state.activeId)) {
     const view = views.get(state.activeId);
     try {
       const img = await view.webContents.capturePage();
       const size = img.getSize();
       if (size.width > 0) {
-        const small = img.resize({ width: Math.min(size.width, 900) });
-        shot = 'data:image/jpeg;base64,' + small.toJPEG(70).toString('base64');
+        const small = size.width > 1600 ? img.resize({ width: 1600 }) : img;
+        shot = 'data:image/jpeg;base64,' + small.toJPEG(82).toString('base64');
       }
     } catch { /* no snapshot, the dialog still works */ }
   }
@@ -607,6 +641,719 @@ async function wsImport() {
   return name;
 }
 
+/* ---------- settings, search and the new tab page ---------- */
+
+const isNewTab = (id) => { const t = getTab(id); return !!t && t.url === NEWTAB; };
+const hostOf = (url) => { try { return new URL(url).host; } catch { return String(url || ''); } };
+const originOf = (url) => { try { return new URL(url).origin; } catch { return ''; } };
+const bare = (url) => String(url || '').replace(/^https?:\/\/(www\.)?/i, '').replace(/\/$/, '');
+
+function searchUrl(q) {
+  return (SEARCH_ENGINES[state.settings.searchEngine] || SEARCH_ENGINES.google).url + encodeURIComponent(q);
+}
+
+function engineNames() {
+  const out = {};
+  for (const k of Object.keys(SEARCH_ENGINES)) out[k] = SEARCH_ENGINES[k].name;
+  return out;
+}
+
+function applyTheme() {
+  const t = state.settings.theme;
+  nativeTheme.themeSource = t === 'system' ? 'system' : (t === 'ocean' || t === 'galaxy' ? 'dark' : 'light');
+}
+
+function setSetting(key, value) {
+  const s = state.settings;
+  if (key === 'searchEngine' && SEARCH_ENGINES[value]) s.searchEngine = value;
+  else if (key === 'theme' && THEMES.indexOf(value) >= 0) { s.theme = value; applyTheme(); }
+  else if (key === 'bookmarksBar' || key === 'offerPasswords') s[key] = !!value;
+  else return false;
+  saveState();
+  push();
+  buildMenu();
+  return true;
+}
+
+function writeJson(file, data) {
+  try {
+    const tmp = file + '.tmp';
+    fs.writeFileSync(tmp, JSON.stringify(data));
+    fs.renameSync(tmp, file);
+  } catch (err) { console.error('Could not save ' + file, err); }
+}
+
+/* ---------- history and suggestions ---------- */
+
+let history = new Map(); // url -> { url, title, visits, last }
+let historyTimer = null;
+const historyPath = () => path.join(app.getPath('userData'), 'history.json');
+
+function loadHistory() {
+  try {
+    const arr = JSON.parse(fs.readFileSync(historyPath(), 'utf8'));
+    if (!Array.isArray(arr)) return;
+    for (const h of arr) {
+      if (h && typeof h.url === 'string') {
+        history.set(h.url, { url: h.url, title: String(h.title || ''), visits: Number(h.visits) || 1, last: Number(h.last) || 0 });
+      }
+    }
+  } catch { /* no history yet */ }
+}
+
+function saveHistory() {
+  clearTimeout(historyTimer);
+  historyTimer = setTimeout(flushHistory, 1000);
+}
+
+function flushHistory() {
+  clearTimeout(historyTimer);
+  writeJson(historyPath(), Array.from(history.values()));
+}
+
+function recordVisit(url, title) {
+  if (!/^https?:/i.test(url)) return;
+  const h = history.get(url);
+  if (h) {
+    h.visits += 1;
+    h.last = Date.now();
+    if (title) h.title = title;
+  } else {
+    history.set(url, { url, title: title || '', visits: 1, last: Date.now() });
+  }
+  if (history.size > 4000) {
+    const keep = Array.from(history.values()).sort((a, b) => b.last - a.last).slice(0, 3000);
+    history = new Map(keep.map((x) => [x.url, x]));
+  }
+  saveHistory();
+}
+
+function updateTitle(url, title) {
+  const h = history.get(url);
+  if (h && title && h.title !== title) { h.title = title; saveHistory(); }
+}
+
+function suggest(input) {
+  const q = String(input || '').trim().toLowerCase();
+  if (!q) return { items: [], inline: null };
+  const words = q.split(/\s+/).filter(Boolean);
+  const now = Date.now();
+  const scored = new Map();
+  const consider = (url, title, base, kind) => {
+    const b = bare(url).toLowerCase();
+    const t = String(title || '').toLowerCase();
+    let score;
+    if (b.startsWith(q)) score = 120;
+    else if (b.split('/')[0].indexOf(q) >= 0) score = 70;
+    else if (words.every((w) => b.indexOf(w) >= 0 || t.indexOf(w) >= 0)) score = 40;
+    else return;
+    score += base;
+    const prev = scored.get(url);
+    if (!prev || prev.score < score) scored.set(url, { url, title: title || bare(url), kind, score });
+  };
+  for (const bm of state.bookmarks) consider(bm.url, bm.title, 35, 'bookmark');
+  for (const h of history.values()) {
+    const days = (now - h.last) / 86400000;
+    consider(h.url, h.title, Math.min(h.visits, 30) * 2 + Math.max(0, 20 - days), 'history');
+  }
+  const items = Array.from(scored.values()).sort((a, b) => b.score - a.score).slice(0, 6);
+  let inline = null;
+  if (!/\s/.test(q)) {
+    for (const it of items) {
+      const b = bare(it.url);
+      const host = b.split('/')[0];
+      if (host.toLowerCase().startsWith(q)) { inline = { text: host, url: originOf(it.url) + '/', title: it.title }; break; }
+      if (b.toLowerCase().startsWith(q)) { inline = { text: b, url: it.url, title: it.title }; break; }
+    }
+  }
+  return { items: items.map((i) => ({ url: i.url, title: i.title, kind: i.kind })), inline };
+}
+
+function topSites() {
+  const byHost = new Map();
+  for (const h of history.values()) {
+    let u;
+    try { u = new URL(h.url); } catch { continue; }
+    const e = byHost.get(u.host) || { host: u.host, origin: u.origin, title: '', visits: 0, best: 0 };
+    e.visits += h.visits;
+    if (h.visits > e.best) { e.best = h.visits; e.title = h.title; }
+    byHost.set(u.host, e);
+  }
+  return Array.from(byHost.values())
+    .sort((a, b) => b.visits - a.visits)
+    .slice(0, 8)
+    .map((e) => ({ url: e.origin + '/', host: e.host.replace(/^www\./, ''), title: e.title }));
+}
+
+function historyList(query) {
+  const q = String(query || '').trim().toLowerCase();
+  let arr = Array.from(history.values());
+  if (q) arr = arr.filter((x) => (x.url + ' ' + x.title).toLowerCase().indexOf(q) >= 0);
+  arr.sort((a, b) => b.last - a.last);
+  return arr.slice(0, 300);
+}
+
+function deleteHistory(url) {
+  history.delete(url);
+  saveHistory();
+  return true;
+}
+
+async function clearHistory() {
+  const { response } = await dialog.showMessageBox(win, {
+    type: 'warning',
+    buttons: ['Clear history', 'Cancel'],
+    defaultId: 1,
+    cancelId: 1,
+    message: 'Clear your browsing history?',
+    detail: 'Address bar suggestions and Most visited start over. Bookmarks, sign-ins and saved passwords stay.'
+  });
+  if (response !== 0) return false;
+  history.clear();
+  flushHistory();
+  toast('History cleared');
+  if (win && !win.isDestroyed()) win.webContents.send('ui', 'history-cleared');
+  return true;
+}
+
+/* ---------- bookmarks ---------- */
+
+function toggleBookmark(id) {
+  const t = getTab(id);
+  const v = views.get(id);
+  if (!t || !v || isNewTab(id)) return false;
+  const url = v.webContents.getURL() || t.url;
+  if (!/^https?:/i.test(url)) { toast('Only web pages can be bookmarked'); return false; }
+  const existing = state.bookmarks.find((b) => b.url === url);
+  if (existing) {
+    state.bookmarks = state.bookmarks.filter((b) => b !== existing);
+    toast('Bookmark removed');
+  } else {
+    state.bookmarks.unshift({
+      id: uid(), url, title: v.webContents.getTitle() || bare(url),
+      favicon: (live.get(id) || {}).favicon || null, created: Date.now()
+    });
+    toast('Bookmarked');
+  }
+  push();
+  saveState();
+  return !existing;
+}
+
+function removeBookmark(bid) {
+  state.bookmarks = state.bookmarks.filter((b) => b.id !== bid);
+  push();
+  saveState();
+  return true;
+}
+
+function renameBookmark(bid, title) {
+  const b = state.bookmarks.find((x) => x.id === bid);
+  const clean = String(title || '').trim().slice(0, 300);
+  if (!b || !clean) return false;
+  b.title = clean;
+  push();
+  saveState();
+  return true;
+}
+
+function moveBookmark(bid, toIndex) {
+  const from = state.bookmarks.findIndex((b) => b.id === bid);
+  if (from < 0) return false;
+  let to = Math.max(0, Math.min(state.bookmarks.length, Number(toIndex) || 0));
+  const [b] = state.bookmarks.splice(from, 1);
+  if (from < to) to -= 1;
+  state.bookmarks.splice(to, 0, b);
+  push();
+  saveState();
+  return true;
+}
+
+function openUrl(url, where) {
+  const t = getTab(state.activeId);
+  if (where === 'new' || !t) {
+    return openTab(t ? { url, sessionId: t.sessionId, name: t.name, color: t.color } : { url }, true);
+  }
+  navigate(t.id, url);
+  return t.id;
+}
+
+function bookmarkMenu(bid) {
+  const b = state.bookmarks.find((x) => x.id === bid);
+  if (!b) return;
+  Menu.buildFromTemplate([
+    { label: 'Open', click: () => openUrl(b.url, 'current') },
+    { label: 'Open in new tab (same sign-in)', click: () => openUrl(b.url, 'new') },
+    { label: 'Open in new tab with a new sign-in', click: () => openTab({ url: b.url }, true) },
+    { type: 'separator' },
+    { label: 'Rename', click: () => ui('rename-bookmark', bid) },
+    { label: 'Copy address', click: () => clipboard.writeText(b.url) },
+    { label: 'Delete', click: () => removeBookmark(bid) }
+  ]).popup({ window: win });
+}
+
+/* ---------- clipboard: notes and screenshots ---------- */
+
+let clips = [];
+const thumbs = new Map();
+const clipsDir = () => path.join(app.getPath('userData'), 'clips');
+const clipsIndex = () => path.join(clipsDir(), 'index.json');
+
+function loadClips() {
+  try {
+    const arr = JSON.parse(fs.readFileSync(clipsIndex(), 'utf8'));
+    if (Array.isArray(arr)) clips = arr.filter((c) => c && c.id && (c.type === 'note' || c.type === 'image'));
+  } catch { /* no clips yet */ }
+}
+
+function saveClips() {
+  try { fs.mkdirSync(clipsDir(), { recursive: true }); } catch { /* exists */ }
+  writeJson(clipsIndex(), clips);
+}
+
+function currentSource() {
+  const t = getTab(state.activeId);
+  if (!t || isNewTab(t.id)) return null;
+  const v = views.get(t.id);
+  return { url: v ? v.webContents.getURL() : t.url, title: v ? v.webContents.getTitle() : '', tab: t.name };
+}
+
+function clipView(c) {
+  const out = { id: c.id, type: c.type, text: c.text || '', created: c.created, source: c.source || null };
+  if (c.type === 'image') {
+    if (!thumbs.has(c.id)) {
+      try {
+        const img = nativeImage.createFromPath(path.join(clipsDir(), c.file));
+        const size = img.getSize();
+        const small = size.width > 640 ? img.resize({ width: 640 }) : img;
+        thumbs.set(c.id, 'data:image/jpeg;base64,' + small.toJPEG(80).toString('base64'));
+      } catch { thumbs.set(c.id, null); }
+    }
+    out.thumb = thumbs.get(c.id);
+  }
+  return out;
+}
+
+function listClips() { return clips.map(clipView); }
+
+function findClip(id) {
+  const c = clips.find((x) => x.id === id);
+  if (!c) throw new Error('That item is no longer in your Clipboard.');
+  return c;
+}
+
+function trimClips() {
+  while (clips.length > 300) {
+    const old = clips.pop();
+    if (old.type === 'image') { try { fs.unlinkSync(path.join(clipsDir(), old.file)); } catch { /* gone */ } thumbs.delete(old.id); }
+  }
+}
+
+function addNote(text) {
+  const t = String(text || '').slice(0, 20000);
+  if (!t.trim()) throw new Error('Write something first.');
+  clips.unshift({ id: uid(), type: 'note', text: t, created: Date.now(), source: currentSource() });
+  trimClips();
+  saveClips();
+  return true;
+}
+
+function updateNote(id, text) {
+  const c = findClip(id);
+  const t = String(text || '').slice(0, 20000);
+  if (c.type !== 'note' || !t.trim()) return false;
+  c.text = t;
+  saveClips();
+  return true;
+}
+
+function addImage(dataUrl, source) {
+  const img = nativeImage.createFromDataURL(String(dataUrl || ''));
+  if (img.isEmpty()) throw new Error('That image could not be read.');
+  fs.mkdirSync(clipsDir(), { recursive: true });
+  const id = uid();
+  const file = id + '.png';
+  fs.writeFileSync(path.join(clipsDir(), file), img.toPNG());
+  clips.unshift({ id, type: 'image', file, text: '', created: Date.now(), source: source || currentSource() });
+  trimClips();
+  saveClips();
+  return true;
+}
+
+function clipImage(id) {
+  const c = findClip(id);
+  if (c.type !== 'image') return null;
+  return { dataUrl: 'data:image/png;base64,' + fs.readFileSync(path.join(clipsDir(), c.file)).toString('base64'), source: c.source };
+}
+
+function copyClip(id) {
+  const c = findClip(id);
+  if (c.type === 'note') clipboard.writeText(c.text);
+  else clipboard.writeImage(nativeImage.createFromPath(path.join(clipsDir(), c.file)));
+  toast(c.type === 'note' ? 'Note copied' : 'Image copied');
+  return true;
+}
+
+async function saveClipAs(id) {
+  const c = findClip(id);
+  const stamp = new Date(c.created || Date.now()).toISOString().slice(0, 19).replace(/[:T]/g, '-');
+  const isNote = c.type === 'note';
+  const { canceled, filePath } = await dialog.showSaveDialog(win, {
+    title: isNote ? 'Save note' : 'Save screenshot',
+    defaultPath: path.join(app.getPath(isNote ? 'documents' : 'pictures'), (isNote ? 'Note ' : 'Screenshot ') + stamp + (isNote ? '.txt' : '.png')),
+    filters: isNote ? [{ name: 'Text', extensions: ['txt'] }] : [{ name: 'PNG image', extensions: ['png'] }]
+  });
+  if (canceled || !filePath) return false;
+  if (isNote) fs.writeFileSync(filePath, c.text, 'utf8');
+  else fs.copyFileSync(path.join(clipsDir(), c.file), filePath);
+  toast('Saved to ' + path.basename(filePath));
+  return true;
+}
+
+function deleteClip(id) {
+  const c = findClip(id);
+  if (c.type === 'image') { try { fs.unlinkSync(path.join(clipsDir(), c.file)); } catch { /* gone */ } thumbs.delete(c.id); }
+  clips = clips.filter((x) => x !== c);
+  saveClips();
+  return true;
+}
+
+function clipFromSystem() {
+  const img = clipboard.readImage();
+  if (!img.isEmpty()) { addImage(img.toDataURL(), null); toast('Image added to your Clipboard'); return true; }
+  const text = clipboard.readText();
+  if (text && text.trim()) { addNote(text); toast('Text added to your Clipboard'); return true; }
+  throw new Error('Your computer clipboard is empty.');
+}
+
+/* ---------- screenshots ---------- */
+
+async function captureTab(id) {
+  const tabId = id || state.activeId;
+  const v = views.get(tabId);
+  if (!v || isNewTab(tabId) || !loaded.has(tabId)) throw new Error('Open a web page first, then take a screenshot.');
+  const img = await v.webContents.capturePage();
+  if (img.isEmpty()) throw new Error('The page could not be captured. Try again once it has loaded.');
+  return { dataUrl: img.toDataURL(), source: currentSource() };
+}
+
+function copyImage(dataUrl) {
+  const img = nativeImage.createFromDataURL(String(dataUrl || ''));
+  if (img.isEmpty()) throw new Error('That image could not be read.');
+  clipboard.writeImage(img);
+  toast('Image copied');
+  return true;
+}
+
+async function saveImageFile(dataUrl) {
+  const img = nativeImage.createFromDataURL(String(dataUrl || ''));
+  if (img.isEmpty()) throw new Error('That image could not be read.');
+  const stamp = new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-');
+  const { canceled, filePath } = await dialog.showSaveDialog(win, {
+    title: 'Save screenshot',
+    defaultPath: path.join(app.getPath('pictures'), 'Screenshot ' + stamp + '.png'),
+    filters: [{ name: 'PNG image', extensions: ['png'] }]
+  });
+  if (canceled || !filePath) return false;
+  fs.writeFileSync(filePath, img.toPNG());
+  toast('Saved to ' + path.basename(filePath));
+  return true;
+}
+
+/* ---------- saved passwords ---------- */
+// Passwords are encrypted with the operating system's own key store
+// (Keychain on Mac, DPAPI on Windows), so the file only works on this
+// computer for this user. Using a saved password needs Touch ID or
+// Windows Hello where available, and an app PIN everywhere else.
+
+let vault = { entries: [], never: [], pin: null };
+let authCache = 'pin';
+let helloAvailable = null;
+let pinFails = 0;
+let pinLockedUntil = 0;
+const pendingOffers = new Map();
+const vaultPath = () => path.join(app.getPath('userData'), 'passwords.json');
+
+function loadVault() {
+  try {
+    const v = JSON.parse(fs.readFileSync(vaultPath(), 'utf8'));
+    vault.entries = Array.isArray(v.entries) ? v.entries.filter((e) => e && e.id && e.origin && typeof e.secret === 'string') : [];
+    vault.never = Array.isArray(v.never) ? v.never.filter((o) => typeof o === 'string') : [];
+    vault.pin = v.pin && v.pin.salt && v.pin.hash ? v.pin : null;
+  } catch { /* nothing saved yet */ }
+}
+
+function saveVault() { writeJson(vaultPath(), vault); }
+
+function canEncrypt() {
+  try { return safeStorage.isEncryptionAvailable(); } catch { return false; }
+}
+const encrypt = (s) => safeStorage.encryptString(s).toString('base64');
+const decrypt = (b64) => safeStorage.decryptString(Buffer.from(b64, 'base64'));
+
+function methodLabel(m) {
+  if (m === 'touchid') return 'Touch ID';
+  if (m === 'hello') return 'Windows Hello';
+  return 'your PIN';
+}
+
+function authInfo() {
+  return { method: authCache, label: methodLabel(authCache), pinSet: !!vault.pin, available: canEncrypt() };
+}
+
+function runHello(mode, reason) {
+  return new Promise((resolve) => {
+    const script = [
+      "$ErrorActionPreference = 'Stop'",
+      'try {',
+      '  Add-Type -AssemblyName System.Runtime.WindowsRuntime',
+      '  $null = [Windows.Security.Credentials.UI.UserConsentVerifier, Windows.Security.Credentials.UI, ContentType = WindowsRuntime]',
+      "  $asTask = [System.WindowsRuntimeSystemExtensions].GetMethods() | Where-Object { $_.Name -eq 'AsTask' -and $_.GetParameters().Count -eq 1 -and $_.GetParameters()[0].ParameterType.Name -eq ('IAsyncOperation' + [char]96 + '1') } | Select-Object -First 1",
+      '  function Wait-Op($op, [Type]$type) { $task = $asTask.MakeGenericMethod($type).Invoke($null, @($op)); [void]$task.Wait(-1); return $task.Result }',
+      "  if ($env:MSB_MODE -eq 'check') {",
+      '    $r = Wait-Op ([Windows.Security.Credentials.UI.UserConsentVerifier]::CheckAvailabilityAsync()) ([Windows.Security.Credentials.UI.UserConsentVerifierAvailability])',
+      '  } else {',
+      '    $r = Wait-Op ([Windows.Security.Credentials.UI.UserConsentVerifier]::RequestVerificationAsync($env:MSB_REASON)) ([Windows.Security.Credentials.UI.UserConsentVerificationResult])',
+      '  }',
+      "  Write-Output ('RESULT:' + $r)",
+      "} catch { Write-Output ('ERROR:' + $_.Exception.Message) }"
+    ].join('\n');
+    const encoded = Buffer.from(script, 'utf16le').toString('base64');
+    execFile('powershell.exe', ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-EncodedCommand', encoded], {
+      env: Object.assign({}, process.env, { MSB_MODE: mode, MSB_REASON: reason || 'Multi-Session Browser' }),
+      windowsHide: true,
+      timeout: 120000
+    }, (_err, stdout) => {
+      const m = /RESULT:(\w+)/.exec(String(stdout || ''));
+      resolve(m ? m[1] : null);
+    });
+  });
+}
+
+async function authMethod() {
+  if (process.platform === 'darwin') {
+    try { if (systemPreferences.canPromptTouchID()) return 'touchid'; } catch { /* no Touch ID */ }
+  }
+  if (process.platform === 'win32' && (parseInt(os.release().split('.')[0], 10) || 0) >= 10) {
+    if (helloAvailable === null) helloAvailable = (await runHello('check')) === 'Available';
+    if (helloAvailable) return 'hello';
+  }
+  return 'pin';
+}
+
+function detectAuth() {
+  authMethod().then((m) => { authCache = m; push(); }).catch(() => { /* stay on PIN */ });
+}
+
+const hashPin = (pin, salt) => crypto.scryptSync(String(pin), Buffer.from(salt, 'hex'), 32).toString('hex');
+
+function checkPin(pin) {
+  if (!vault.pin || typeof pin !== 'string' || !pin) return false;
+  const a = Buffer.from(hashPin(pin, vault.pin.salt), 'hex');
+  const b = Buffer.from(vault.pin.hash, 'hex');
+  return a.length === b.length && crypto.timingSafeEqual(a, b);
+}
+
+function setPin(pin, oldPin) {
+  if (!/^\d{4,12}$/.test(String(pin || ''))) throw new Error('Use 4 to 12 digits.');
+  if (vault.pin && !checkPin(oldPin)) throw new Error('Your current PIN is not right.');
+  const salt = crypto.randomBytes(16).toString('hex');
+  vault.pin = { salt, hash: hashPin(pin, salt) };
+  saveVault();
+  push();
+  toast('PIN saved');
+  return true;
+}
+
+async function authenticate(reason, pin) {
+  const method = await authMethod();
+  authCache = method;
+  if (method === 'touchid') {
+    try { await systemPreferences.promptTouchID(reason); return true; } catch { throw new Error('Touch ID did not confirm it was you.'); }
+  }
+  if (method === 'hello') {
+    if (win && !win.isDestroyed()) win.focus();
+    const r = await runHello('verify', 'Multi-Session Browser wants to ' + reason);
+    if (r === 'Verified') return true;
+    if (r === 'Canceled') throw new Error('Windows Hello was cancelled.');
+    if (r === 'RetriesExhausted') throw new Error('Too many tries. Wait a moment and try again.');
+    if (r === null || r === 'DeviceNotPresent' || r === 'NotConfiguredForUser' || r === 'DisabledByPolicy') {
+      helloAvailable = false;
+      authCache = 'pin';
+      push();
+      throw new Error('Windows Hello is not set up on this PC, so the browser will use a PIN instead. Try again.');
+    }
+    throw new Error('Windows Hello did not confirm it was you.');
+  }
+  if (!vault.pin) throw new Error('PIN_SETUP');
+  if (Date.now() < pinLockedUntil) throw new Error('Too many wrong PINs. Wait 30 seconds and try again.');
+  if (!checkPin(pin)) {
+    pinFails += 1;
+    if (pinFails >= 5) { pinFails = 0; pinLockedUntil = Date.now() + 30000; }
+    throw new Error('That PIN is not right.');
+  }
+  pinFails = 0;
+  return true;
+}
+
+function tabIdFor(wc) {
+  for (const [id, v] of views) if (v.webContents === wc) return id;
+  return null;
+}
+
+ipcMain.on('pw:submit', (event, data) => {
+  const tabId = tabIdFor(event.sender);
+  if (!tabId || !data || !win) return;
+  const origin = originOf(event.sender.getURL());
+  if (!origin || origin !== data.origin || !/^https?:/.test(origin)) return;
+  const password = String(data.password || '');
+  const username = String(data.username || '').slice(0, 200);
+  if (!password || password.length > 500) return;
+  if (!state.settings.offerPasswords || vault.never.indexOf(origin) >= 0 || !canEncrypt()) return;
+  const same = vault.entries.find((e) => e.origin === origin && e.username === username);
+  if (same) {
+    try { if (decrypt(same.secret) === password) { same.used = Date.now(); saveVault(); return; } } catch { /* re-save */ }
+  }
+  const offerId = uid();
+  pendingOffers.set(offerId, { origin, username, password, tabId, at: Date.now() });
+  if (pendingOffers.size > 10) pendingOffers.delete(pendingOffers.keys().next().value);
+  win.webContents.send('pw-offer', { id: offerId, tabId, origin, host: hostOf(origin), username, update: !!same });
+});
+
+ipcMain.on('pw:form', (event) => {
+  const tabId = tabIdFor(event.sender);
+  if (!tabId || !win) return;
+  const origin = originOf(event.sender.getURL());
+  const accounts = vault.entries.filter((e) => e.origin === origin).map((e) => ({ id: e.id, username: e.username }));
+  if (accounts.length) win.webContents.send('pw-available', { tabId, origin, host: hostOf(origin), accounts });
+});
+
+function pwSave(offerId, username) {
+  const o = pendingOffers.get(offerId);
+  if (!o) throw new Error('That sign-in is no longer available to save. Sign in again to save it.');
+  if (!canEncrypt()) throw new Error('This computer cannot encrypt saved passwords.');
+  pendingOffers.delete(offerId);
+  const user = String(username === undefined || username === null ? o.username : username).trim().slice(0, 200);
+  const existing = vault.entries.find((e) => e.origin === o.origin && e.username === user);
+  if (existing) { existing.secret = encrypt(o.password); existing.updated = Date.now(); }
+  else vault.entries.push({ id: uid(), origin: o.origin, username: user, secret: encrypt(o.password), created: Date.now(), used: 0 });
+  saveVault();
+  toast('Password saved for ' + hostOf(o.origin));
+  return true;
+}
+
+function pwNever(offerId) {
+  const o = pendingOffers.get(offerId);
+  pendingOffers.delete(offerId);
+  if (o && vault.never.indexOf(o.origin) < 0) { vault.never.push(o.origin); saveVault(); }
+  return true;
+}
+
+function pwDismiss(offerId) { pendingOffers.delete(offerId); return true; }
+
+function findEntry(entryId) {
+  const e = vault.entries.find((x) => x.id === entryId);
+  if (!e) throw new Error('That saved password no longer exists.');
+  return e;
+}
+
+async function pwFill(tabId, entryId, pin) {
+  const v = views.get(tabId);
+  const e = findEntry(entryId);
+  if (!v) throw new Error('That tab is closed.');
+  if (originOf(v.webContents.getURL()) !== e.origin) throw new Error('This tab is no longer on ' + hostOf(e.origin) + '.');
+  await authenticate('fill your saved password for ' + hostOf(e.origin), pin);
+  v.webContents.send('pw:fill', { origin: e.origin, username: e.username, password: decrypt(e.secret) });
+  e.used = Date.now();
+  saveVault();
+  v.webContents.focus();
+  return true;
+}
+
+function pwList() {
+  return {
+    entries: vault.entries
+      .map((e) => ({ id: e.id, origin: e.origin, host: hostOf(e.origin), username: e.username, created: e.created, used: e.used || 0 }))
+      .sort((a, b) => a.host.localeCompare(b.host) || a.username.localeCompare(b.username)),
+    never: vault.never.slice().sort()
+  };
+}
+
+async function pwReveal(entryId, pin) {
+  const e = findEntry(entryId);
+  await authenticate('show a saved password', pin);
+  return decrypt(e.secret);
+}
+
+async function pwCopy(entryId, pin) {
+  const e = findEntry(entryId);
+  await authenticate('copy a saved password', pin);
+  const pw = decrypt(e.secret);
+  clipboard.writeText(pw);
+  setTimeout(() => { if (clipboard.readText() === pw) clipboard.writeText(''); }, 30000);
+  toast('Password copied. It is cleared from your clipboard in 30 seconds.');
+  return true;
+}
+
+function pwDelete(entryId) {
+  vault.entries = vault.entries.filter((e) => e.id !== entryId);
+  saveVault();
+  return true;
+}
+
+function pwUnblock(origin) {
+  vault.never = vault.never.filter((o) => o !== origin);
+  saveVault();
+  return true;
+}
+
+/* ---------- settings menu ---------- */
+
+function showAbout() {
+  dialog.showMessageBox(win, {
+    type: 'info',
+    buttons: ['OK'],
+    message: 'Multi-Session Browser ' + app.getVersion(),
+    detail: 'Chromium ' + process.versions.chrome + ', Electron ' + process.versions.electron +
+      '\nSaved passwords on this computer are unlocked with ' + methodLabel(authCache) + '.'
+  });
+}
+
+function showAppMenu() {
+  const s = state.settings;
+  const id = state.activeId;
+  const t = getTab(id);
+  const engines = Object.keys(SEARCH_ENGINES).map((k) => ({
+    label: SEARCH_ENGINES[k].name, type: 'radio', checked: s.searchEngine === k, click: () => setSetting('searchEngine', k)
+  }));
+  const themes = [
+    ['system', 'Match my computer'], ['arctic', 'Arctic Frost'], ['ocean', 'Ocean Depths (dark)'],
+    ['minimal', 'Modern Minimalist'], ['galaxy', 'Midnight Galaxy (dark)']
+  ].map((p) => ({ label: p[1], type: 'radio', checked: s.theme === p[0], click: () => setSetting('theme', p[0]) }));
+  const template = [];
+  if (t) {
+    template.push(
+      { label: 'Rename or recolor this tab', click: () => ui('edit-tab', id) },
+      { label: 'Duplicate tab (same sign-in)', click: () => duplicateTab(id) },
+      { label: 'Sign this tab out of every site', click: () => clearSession(id) },
+      { type: 'separator' }
+    );
+  }
+  template.push(
+    { label: 'New tab', accelerator: 'CmdOrCtrl+T', click: () => ui('new-tab') },
+    { label: 'Workspaces', click: () => ui('workspaces') },
+    { type: 'separator' },
+    { label: 'Search engine', submenu: engines },
+    { label: 'Appearance', submenu: themes },
+    { label: 'Show bookmarks bar', type: 'checkbox', checked: !!s.bookmarksBar, click: (item) => setSetting('bookmarksBar', item.checked) },
+    { label: 'Offer to save passwords', type: 'checkbox', checked: !!s.offerPasswords, click: (item) => setSetting('offerPasswords', item.checked) },
+    { type: 'separator' },
+    { label: 'Clear browsing history', click: () => clearHistory() },
+    { label: 'About Multi-Session Browser', click: () => showAbout() }
+  );
+  Menu.buildFromTemplate(template).popup({ window: win });
+}
+
 /* ---------- IPC ---------- */
 
 const commands = {
@@ -631,7 +1378,43 @@ const commands = {
   'ws-open': wsOpen,
   'ws-delete': wsDelete,
   'ws-export': wsExport,
-  'ws-import': wsImport
+  'ws-import': wsImport,
+  'panel-width': (w) => { panelWidth = Math.max(0, Math.min(600, Math.round(Number(w) || 0))); layout(); },
+  'app-menu': showAppMenu,
+  'open-url': openUrl,
+  'set-setting': setSetting,
+  suggest,
+  'top-sites': topSites,
+  'history-list': historyList,
+  'history-delete': deleteHistory,
+  'history-clear': clearHistory,
+  'bm-toggle': toggleBookmark,
+  'bm-remove': removeBookmark,
+  'bm-rename': renameBookmark,
+  'bm-move': moveBookmark,
+  'bm-menu': bookmarkMenu,
+  'clip-list': listClips,
+  'clip-note': addNote,
+  'clip-update': updateNote,
+  'clip-image': clipImage,
+  'clip-add-image': addImage,
+  'clip-copy': copyClip,
+  'clip-save': saveClipAs,
+  'clip-delete': deleteClip,
+  'clip-from-system': clipFromSystem,
+  capture: captureTab,
+  'copy-image': copyImage,
+  'save-image': saveImageFile,
+  'pw-save': pwSave,
+  'pw-never': pwNever,
+  'pw-dismiss': pwDismiss,
+  'pw-fill': pwFill,
+  'pw-list': pwList,
+  'pw-reveal': pwReveal,
+  'pw-copy': pwCopy,
+  'pw-delete': pwDelete,
+  'pw-unblock': pwUnblock,
+  'pin-set': setPin
 };
 
 ipcMain.handle('cmd', async (event, name, ...args) => {
@@ -700,6 +1483,19 @@ function buildMenu() {
       ]
     },
     {
+      label: 'Tools',
+      submenu: [
+        { label: 'Bookmark this page', accelerator: 'CmdOrCtrl+D', click: () => state.activeId && toggleBookmark(state.activeId) },
+        { label: 'Show bookmarks bar', type: 'checkbox', checked: !!state.settings.bookmarksBar, accelerator: 'CmdOrCtrl+Shift+B', click: (item) => setSetting('bookmarksBar', item.checked) },
+        { type: 'separator' },
+        { label: 'Take a screenshot', accelerator: 'CmdOrCtrl+Shift+X', click: () => ui('screenshot') },
+        { label: 'Clipboard', accelerator: 'CmdOrCtrl+Shift+Y', click: () => ui('panel', 'clipboard') },
+        { label: 'Bookmarks', accelerator: 'CmdOrCtrl+Shift+O', click: () => ui('panel', 'bookmarks') },
+        { label: 'History', accelerator: isMac ? 'Cmd+Y' : 'Ctrl+H', click: () => ui('panel', 'history') },
+        { label: 'Passwords', click: () => ui('panel', 'passwords') }
+      ]
+    },
+    {
       label: 'Tabs',
       submenu: [
         { label: 'Next tab', accelerator: 'Ctrl+Tab', click: () => cycle(1) },
@@ -732,7 +1528,7 @@ function createWindow() {
     show: false,
     title: 'Multi-Session Browser',
     autoHideMenuBar: true,
-    backgroundColor: '#E3E8ED',
+    backgroundColor: '#DCE7F5',
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
@@ -783,14 +1579,20 @@ if (!app.requestSingleInstanceLock()) {
 
     if (process.platform === 'win32') app.setAppUserModelId('app.multisession.browser');
     loadState();
+    loadHistory();
+    loadClips();
+    loadVault();
+    applyTheme();
     buildMenu();
     createWindow();
+    detectAuth();
 
     app.on('activate', () => { if (!win) createWindow(); });
   });
 
   app.on('window-all-closed', () => {
     saveState(true);
+    flushHistory();
     if (!isMac) app.quit();
   });
 }
