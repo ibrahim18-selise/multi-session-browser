@@ -1,7 +1,7 @@
 {
   "name": "multi-session-browser",
   "productName": "Multi-Session Browser",
-  "version": "2.0.1",
+  "version": "2.1.0",
   "description": "A tabbed browser where every tab can have its own sign-in. Web edition.",
   "author": "Multi-Session Browser",
   "license": "UNLICENSED",
@@ -27,7 +27,8 @@
     },
     "files": [
       "src/**/*",
-      "package.json"
+      "package.json",
+      "node_modules/@fontsource-variable/instrument-sans/files/instrument-sans-latin-wght-normal.woff2"
     ],
     "win": {
       "icon": "build/icon.png",
@@ -71,5 +72,8 @@
         }
       ]
     }
+  },
+  "dependencies": {
+    "@fontsource-variable/instrument-sans": "5.3.0"
   }
 }
