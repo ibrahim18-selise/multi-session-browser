@@ -130,9 +130,13 @@ rm -rf "/Applications/Multi-Session Browser.app"
 - Write a note, add what is on your computer clipboard, or take a screenshot from the panel.
 - Each item can be copied, saved as a file, edited (notes) or marked up again (screenshots). Everything stays on your computer.
 
-### Bookmarks
-- Click the star in the address bar or press Ctrl+D to bookmark a page. Click it again to remove it.
-- Bookmarks appear on the bookmarks bar (Ctrl+Shift+B shows or hides it), on the new tab page and in the Bookmarks panel, where you can search, rename and delete them. Drag them on the bar to reorder.
+### Bookmarks and folders
+- Click the star in the address bar or press Ctrl+D to bookmark a page. A small window opens where you can rename the bookmark and pick its folder, or create a new folder on the spot. Clicking the star on a bookmarked page opens the same window, with Remove.
+- Make as many folders as you like (Work, Testing, Clients and so on). The browser remembers the last folder you used for the next bookmark.
+- Folders sit at the start of the bookmarks bar (Ctrl+Shift+B shows or hides it). Click one to see its bookmarks, open them all in new tabs, rename or delete it. Drag a bookmark onto a folder to move it there.
+- The Bookmarks panel groups bookmarks by folder, with collapsible sections, search, and New folder. Drag bookmarks between folders, or right-click one and choose Move to folder.
+- Deleting a folder asks whether to keep its bookmarks (they move to the bookmarks bar) or delete them too.
+- Folders also show on the new tab page.
 
 ### Look and feel
 - Four themes from Claude's theme set: Arctic Frost (light) and Ocean Depths (dark) by default, following your computer's light or dark setting, plus Modern Minimalist and Midnight Galaxy. Change it in the menu, under Appearance.
