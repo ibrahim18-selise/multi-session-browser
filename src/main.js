@@ -64,7 +64,7 @@ const loaded = new Set();  // tabIds whose page has been requested
 const hardened = new WeakSet();
 const permissionDecisions = new Map();
 
-let state = { tabs: [], activeId: null, workspaces: [], bounds: null, bookmarks: [], settings: Object.assign({}, DEFAULT_SETTINGS) };
+let state = { tabs: [], activeId: null, workspaces: [], bounds: null, bookmarks: [], folders: [], lastFolder: null, settings: Object.assign({}, DEFAULT_SETTINGS) };
 
 /* ---------- helpers ---------- */
 
@@ -137,8 +137,15 @@ function loadState() {
       .filter((b) => b && typeof b.url === 'string' && /^https?:/i.test(b.url))
       .map((b) => ({
         id: typeof b.id === 'string' ? b.id : uid(), url: b.url, title: String(b.title || b.url).slice(0, 300),
-        favicon: typeof b.favicon === 'string' ? b.favicon : null, created: Number(b.created) || Date.now()
+        favicon: typeof b.favicon === 'string' ? b.favicon : null, created: Number(b.created) || Date.now(),
+        folderId: typeof b.folderId === 'string' ? b.folderId : null
       }));
+    state.folders = (Array.isArray(raw.folders) ? raw.folders : [])
+      .filter((f) => f && typeof f.id === 'string')
+      .map((f) => ({ id: f.id, name: cleanFolderName(f.name), created: Number(f.created) || Date.now() }));
+    const folderIds = new Set(state.folders.map((f) => f.id));
+    state.bookmarks.forEach((b) => { if (b.folderId && !folderIds.has(b.folderId)) b.folderId = null; });
+    state.lastFolder = folderIds.has(raw.lastFolder) ? raw.lastFolder : null;
     state.settings = Object.assign({}, DEFAULT_SETTINGS, raw.settings && typeof raw.settings === 'object' ? raw.settings : {});
     if (!SEARCH_ENGINES[state.settings.searchEngine]) state.settings.searchEngine = 'google';
     if (THEMES.indexOf(state.settings.theme) < 0) state.settings.theme = 'system';
@@ -155,6 +162,8 @@ function saveState(now = false) {
       workspaces: state.workspaces,
       bounds: state.bounds,
       bookmarks: state.bookmarks,
+      folders: state.folders,
+      lastFolder: state.lastFolder,
       settings: state.settings
     };
     try {
@@ -174,6 +183,7 @@ function push() {
     workspaces: state.workspaces.map((w) => ({ name: w.name, count: w.tabs.length, savedAt: w.savedAt })),
     colors: COLORS,
     bookmarks: state.bookmarks,
+    folders: state.folders,
     settings: state.settings,
     engines: engineNames(),
     auth: authInfo()
@@ -819,25 +829,26 @@ async function clearHistory() {
 /* ---------- bookmarks ---------- */
 
 function toggleBookmark(id) {
+  // Bookmarks the page, or opens the existing bookmark for editing.
   const t = getTab(id);
   const v = views.get(id);
-  if (!t || !v || isNewTab(id)) return false;
+  if (!t || !v || isNewTab(id)) return null;
   const url = v.webContents.getURL() || t.url;
-  if (!/^https?:/i.test(url)) { toast('Only web pages can be bookmarked'); return false; }
-  const existing = state.bookmarks.find((b) => b.url === url);
-  if (existing) {
-    state.bookmarks = state.bookmarks.filter((b) => b !== existing);
-    toast('Bookmark removed');
-  } else {
-    state.bookmarks.unshift({
+  if (!/^https?:/i.test(url)) { toast('Only web pages can be bookmarked'); return null; }
+  let b = state.bookmarks.find((x) => x.url === url);
+  const added = !b;
+  if (!b) {
+    b = {
       id: uid(), url, title: v.webContents.getTitle() || bare(url),
-      favicon: (live.get(id) || {}).favicon || null, created: Date.now()
-    });
-    toast('Bookmarked');
+      favicon: (live.get(id) || {}).favicon || null, created: Date.now(),
+      folderId: state.folders.some((f) => f.id === state.lastFolder) ? state.lastFolder : null
+    };
+    state.bookmarks.unshift(b);
+    push();
+    saveState();
   }
-  push();
-  saveState();
-  return !existing;
+  ui('edit-bookmark', { id: b.id, added });
+  return { id: b.id, added };
 }
 
 function removeBookmark(bid) {
@@ -878,15 +889,127 @@ function openUrl(url, where) {
   return t.id;
 }
 
+const menuLabel = (text) => {
+  let t = String(text || '');
+  if (t.length > 60) t = t.slice(0, 57) + '...';
+  return isMac ? t : t.replace(/&/g, '&&');
+};
+
+function cleanFolderName(name) {
+  return String(name || '').replace(/\s+/g, ' ').trim().slice(0, 60) || 'New folder';
+}
+
+function updateBookmark(bid, patch) {
+  const b = state.bookmarks.find((x) => x.id === bid);
+  if (!b) return false;
+  if (patch && patch.title !== undefined) {
+    const t = String(patch.title || '').trim().slice(0, 300);
+    if (t) b.title = t;
+  }
+  if (patch && patch.folderId !== undefined) {
+    const fid = patch.folderId && state.folders.some((f) => f.id === patch.folderId) ? patch.folderId : null;
+    b.folderId = fid;
+    state.lastFolder = fid;
+  }
+  push();
+  saveState();
+  return true;
+}
+
+function createFolder(name) {
+  const f = { id: uid(), name: cleanFolderName(name), created: Date.now() };
+  state.folders.push(f);
+  push();
+  saveState();
+  return f.id;
+}
+
+function renameFolder(fid, name) {
+  const f = state.folders.find((x) => x.id === fid);
+  if (!f || !String(name || '').trim()) return false;
+  f.name = cleanFolderName(name);
+  push();
+  saveState();
+  return true;
+}
+
+function moveFolder(fid, toIndex) {
+  const from = state.folders.findIndex((f) => f.id === fid);
+  if (from < 0) return false;
+  let to = Math.max(0, Math.min(state.folders.length, Number(toIndex) || 0));
+  const [f] = state.folders.splice(from, 1);
+  if (from < to) to -= 1;
+  state.folders.splice(to, 0, f);
+  push();
+  saveState();
+  return true;
+}
+
+async function deleteFolder(fid) {
+  const f = state.folders.find((x) => x.id === fid);
+  if (!f) return false;
+  const inside = state.bookmarks.filter((b) => b.folderId === fid);
+  let keep = true;
+  if (inside.length) {
+    const { response } = await dialog.showMessageBox(win, {
+      type: 'warning',
+      buttons: ['Keep the bookmarks', 'Delete them too', 'Cancel'],
+      defaultId: 0,
+      cancelId: 2,
+      message: 'Delete the folder "' + f.name + '"?',
+      detail: 'It holds ' + inside.length + ' bookmark' + (inside.length === 1 ? '' : 's') + '. "Keep the bookmarks" moves them to the bookmarks bar.'
+    });
+    if (response === 2) return false;
+    keep = response === 0;
+  }
+  state.folders = state.folders.filter((x) => x !== f);
+  if (keep) inside.forEach((b) => { b.folderId = null; });
+  else state.bookmarks = state.bookmarks.filter((b) => b.folderId !== fid);
+  if (state.lastFolder === fid) state.lastFolder = null;
+  push();
+  saveState();
+  toast('Folder deleted');
+  return true;
+}
+
+function openFolder(fid) {
+  const items = state.bookmarks.filter((b) => b.folderId === fid).slice(0, 20);
+  const t = getTab(state.activeId);
+  items.forEach((b, i) => openTab(t ? { url: b.url, sessionId: t.sessionId, name: t.name, color: t.color } : { url: b.url }, i === 0));
+  return items.length;
+}
+
+function folderMenu(fid, x, y) {
+  const f = state.folders.find((z) => z.id === fid);
+  if (!f) return;
+  const items = state.bookmarks.filter((b) => b.folderId === fid);
+  const template = items.length
+    ? items.slice(0, 80).map((b) => ({ label: menuLabel(b.title || bare(b.url)), click: () => openUrl(b.url, 'current') }))
+    : [{ label: 'This folder is empty', enabled: false }];
+  template.push(
+    { type: 'separator' },
+    { label: 'Open all in new tabs (same sign-in)', enabled: items.length > 0, click: () => openFolder(fid) },
+    { label: 'Rename folder', click: () => ui('rename-folder', fid) },
+    { label: 'Delete folder', click: () => deleteFolder(fid) }
+  );
+  const opts = { window: win };
+  if (Number.isFinite(x) && Number.isFinite(y)) { opts.x = Math.round(x); opts.y = Math.round(y); }
+  Menu.buildFromTemplate(template).popup(opts);
+}
+
 function bookmarkMenu(bid) {
   const b = state.bookmarks.find((x) => x.id === bid);
   if (!b) return;
+  const moveTo = [{ label: 'Bookmarks bar', type: 'radio', checked: !b.folderId, click: () => updateBookmark(bid, { folderId: null }) }]
+    .concat(state.folders.map((f) => ({ label: menuLabel(f.name), type: 'radio', checked: b.folderId === f.id, click: () => updateBookmark(bid, { folderId: f.id }) })))
+    .concat([{ type: 'separator' }, { label: 'New folder', click: () => ui('new-folder', bid) }]);
   Menu.buildFromTemplate([
     { label: 'Open', click: () => openUrl(b.url, 'current') },
     { label: 'Open in new tab (same sign-in)', click: () => openUrl(b.url, 'new') },
     { label: 'Open in new tab with a new sign-in', click: () => openTab({ url: b.url }, true) },
     { type: 'separator' },
-    { label: 'Rename', click: () => ui('rename-bookmark', bid) },
+    { label: 'Edit', click: () => ui('edit-bookmark', { id: bid, added: false }) },
+    { label: 'Move to folder', submenu: moveTo },
     { label: 'Copy address', click: () => clipboard.writeText(b.url) },
     { label: 'Delete', click: () => removeBookmark(bid) }
   ]).popup({ window: win });
@@ -1393,6 +1516,13 @@ const commands = {
   'bm-rename': renameBookmark,
   'bm-move': moveBookmark,
   'bm-menu': bookmarkMenu,
+  'bm-update': updateBookmark,
+  'folder-create': createFolder,
+  'folder-rename': renameFolder,
+  'folder-move': moveFolder,
+  'folder-delete': deleteFolder,
+  'folder-open': openFolder,
+  'folder-menu': folderMenu,
   'clip-list': listClips,
   'clip-note': addNote,
   'clip-update': updateNote,
