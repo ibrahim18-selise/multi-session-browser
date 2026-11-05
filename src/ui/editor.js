@@ -52,6 +52,8 @@
     const clear = el('button', { class: 'ghost small', type: 'button', text: 'Clear' });
     clear.addEventListener('click', () => { commitText(); ops = []; redraw(); });
 
+    const toAI = el('button', { class: 'ghost small', type: 'button', text: 'Send to AI', title: 'Attach this image in the AI side panel' });
+    toAI.addEventListener('click', () => { const img = exportImage(); close(true); window.sendImageToAI(img); });
     const copy = el('button', { class: 'ghost small', type: 'button', text: 'Copy image' });
     copy.addEventListener('click', () => { window.run('copy-image', exportImage()); });
     const keep = el('button', { class: 'ghost small', type: 'button', text: 'Add to Clipboard' });
@@ -67,7 +69,7 @@
     const done = el('button', { class: 'primary small', type: 'button', text: 'Close' });
     done.addEventListener('click', () => close(false));
 
-    const bar = el('div', { class: 'ed-bar' }, [toolGroup, colorGroup, sizeGroup, undo, clear, el('span', { class: 'ed-spacer' }), copy, keep, save, done]);
+    const bar = el('div', { class: 'ed-bar' }, [toolGroup, colorGroup, sizeGroup, undo, clear, el('span', { class: 'ed-spacer' }), toAI, copy, keep, save, done]);
     canvas = el('canvas', { 'aria-label': 'Screenshot. Drag to draw with the selected tool.' });
     ctx = canvas.getContext('2d');
     stage = el('div', { class: 'ed-stage', 'data-tool': tool }, canvas);

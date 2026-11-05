@@ -38,6 +38,10 @@ const ICONS = {
   chevron: '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M6 4l4 4-4 4"/></svg>',
   bar: '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4.5 2.5h7v11L8 11l-3.5 2.5z"/></svg>',
   move: '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2 4.5a1 1 0 0 1 1-1h3.2l1.4 1.6H13a1 1 0 0 1 1 1V12a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1z"/><path d="M6.5 9.25h3.5M8.5 7.5l1.75 1.75L8.5 11"/></svg>',
+  sparkle: '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 2l1.3 3.4L12.7 6.7 9.3 8 8 11.4 6.7 8 3.3 6.7 6.7 5.4z"/><path d="M12.5 10.5l.6 1.4 1.4.6-1.4.6-.6 1.4-.6-1.4-1.4-.6 1.4-.6z"/></svg>',
+  reload: '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M13 8a5 5 0 1 1-1.6-3.7M13 2.5v3h-3"/></svg>',
+  more: '<svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="3.5" cy="8" r=".7"/><circle cx="8" cy="8" r=".7"/><circle cx="12.5" cy="8" r=".7"/></svg>',
+  quote: '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3 4.5h10M3 8h10M3 11.5h6"/></svg>',
   markup: '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2.5 13.5c2-1 2.5-3 4.5-3s1.5 2 3.5 2 2-2 3-2.5"/><path d="M9.5 2.5l2 2-4.5 4.5-2.5.5.5-2.5z"/></svg>'
 };
 
@@ -723,10 +727,23 @@ function askText(title, label, value) {
 
 /* ---------- side panel ---------- */
 
+const PANEL_KEYS = { ai: 'msb.panelWidth.ai', other: 'msb.panelWidth' };
+
+function panelWidthFor(name) {
+  let v = 0;
+  try { v = parseInt(localStorage.getItem(name === 'ai' ? PANEL_KEYS.ai : PANEL_KEYS.other), 10); } catch { v = 0; }
+  const fallback = name === 'ai' ? 440 : 360;
+  const max = Math.max(300, window.innerWidth - 380);
+  return Math.min(max, v >= 300 && v <= 900 ? v : fallback);
+}
+
 function openPanel(name) {
+  if (panel === 'ai' && name !== 'ai') run('ai-hide');
   panel = name;
   const el = $('#panel');
   el.hidden = false;
+  el.style.width = panelWidthFor(name) + 'px';
+  $('#panel-body').classList.toggle('ai-mode', name === 'ai');
   $$('.seg button', el).forEach((b) => b.setAttribute('aria-selected', String(b.dataset.seg === name)));
   $$('[data-panel]').forEach((b) => b.classList.toggle('on', b.dataset.panel === name));
   const w = el.offsetWidth;
@@ -736,6 +753,7 @@ function openPanel(name) {
 }
 
 function closePanel() {
+  if (panel === 'ai') run('ai-hide');
   panel = null;
   $('#panel').hidden = true;
   $$('[data-panel]').forEach((b) => b.classList.remove('on'));
@@ -755,7 +773,88 @@ function renderPanel() {
   else if (panel === 'bookmarks') renderBookmarksPanel(body);
   else if (panel === 'history') renderHistory(body);
   else if (panel === 'passwords') renderPasswords(body);
+  else if (panel === 'ai') renderAI(body);
 }
+
+/* AI assistant */
+
+const AI_NAMES = { claude: 'Claude', chatgpt: 'ChatGPT', gemini: 'Gemini' };
+let aiKey = 'claude';
+const aiObserver = new ResizeObserver(() => reportAI());
+
+function renderAI(body) {
+  aiKey = AI_NAMES[S.settings.aiProvider] ? S.settings.aiProvider : 'claude';
+  const pick = h('div', { class: 'seg', role: 'tablist', 'aria-label': 'Assistant' }, Object.keys(AI_NAMES).map((k) => h('button', {
+    type: 'button', role: 'tab', 'aria-selected': String(k === aiKey), text: AI_NAMES[k],
+    onclick: () => { if (k !== aiKey) { aiKey = k; S.settings.aiProvider = k; renderPanel(); } }
+  })));
+  const pageOpen = !!activeTab() && !isNewTabUrl(activeTab().url);
+  body.append(
+    h('div', { class: 'ai-top' }, [pick, miniBtn('reload', 'Reload', () => run('ai-reload', aiKey)), miniBtn('more', 'More', () => run('ai-menu', aiKey))]),
+    h('div', { class: 'ai-acts' }, [
+      h('button', { class: 'ghost small', type: 'button', html: ICONS.link + '<span>Send page link</span>', disabled: !pageOpen, title: 'Put this page\'s title and address in the message box', onclick: () => run('ai-send', aiKey, 'page') }),
+      h('button', { class: 'ghost small', type: 'button', html: ICONS.quote + '<span>Send selection</span>', disabled: !pageOpen, title: 'Put the text you selected on the page in the message box', onclick: () => run('ai-send', aiKey, 'selection') }),
+      h('button', { class: 'ghost small', type: 'button', html: ICONS.camera + '<span>Send screenshot</span>', disabled: !pageOpen, title: 'Attach a screenshot of this page', onclick: aiScreenshot })
+    ]),
+    h('div', { id: 'ai-host', class: 'ai-host' }, h('p', { class: 'ai-wait', text: 'Loading ' + AI_NAMES[aiKey] + '. Sign in once and it stays signed in here, separate from your tabs.' }))
+  );
+  aiObserver.disconnect();
+  aiObserver.observe($('#ai-host'));
+  reportAI();
+}
+
+function reportAI() {
+  const host = $('#ai-host');
+  if (!host || panel !== 'ai') return;
+  const r = host.getBoundingClientRect();
+  if (r.width < 10 || r.height < 10) return;
+  run('ai-show', aiKey, { x: Math.round(r.left), y: Math.round(r.top), width: Math.round(r.width), height: Math.round(r.height) });
+}
+
+function openAI() {
+  if (panel !== 'ai') openPanel('ai');
+  return aiKey;
+}
+
+async function aiScreenshot() {
+  const t = activeTab();
+  if (!t || isNewTabUrl(t.url)) { toast('Open a web page first.'); return; }
+  const res = await run('capture', t.id);
+  if (res) run('ai-image', openAI(), res.dataUrl);
+}
+
+function sendImageToAI(dataUrl) {
+  run('ai-image', openAI(), dataUrl);
+}
+
+$('#panel-resize').addEventListener('pointerdown', async (e) => {
+  if (e.button !== 0 || !panel) return;
+  e.preventDefault();
+  const el = $('#panel');
+  const handle = $('#panel-resize');
+  const startX = e.clientX;
+  const startW = el.offsetWidth;
+  const key = panel === 'ai' ? PANEL_KEYS.ai : PANEL_KEYS.other;
+  handle.classList.add('active');
+  overlayOn('resize');
+  const move = (ev) => {
+    const w = Math.max(300, Math.min(900, window.innerWidth - 380, startW + (startX - ev.clientX)));
+    el.style.width = w + 'px';
+    document.documentElement.style.setProperty('--panel-w', w + 'px');
+  };
+  const up = () => {
+    window.removeEventListener('pointermove', move);
+    window.removeEventListener('pointerup', up);
+    handle.classList.remove('active');
+    const w = el.offsetWidth;
+    try { localStorage.setItem(key, String(w)); } catch { /* storage unavailable */ }
+    run('panel-width', w);
+    overlayOff('resize');
+    reportAI();
+  };
+  window.addEventListener('pointermove', move);
+  window.addEventListener('pointerup', up);
+});
 
 /* Clipboard */
 
@@ -1215,6 +1314,7 @@ wireSearchInput($('#ntp-input'), $('#ntp-search'));
 window.addEventListener('resize', () => {
   if (SG.open) sgPosition();
   if (panel) {
+    $('#panel').style.width = panelWidthFor(panel) + 'px';
     const w = $('#panel').offsetWidth;
     document.documentElement.style.setProperty('--panel-w', w + 'px');
     run('panel-width', w);
@@ -1435,6 +1535,7 @@ api.on('ui', (action, arg) => {
   else if (action === 'workspaces') openWorkspaces();
   else if (action === 'screenshot') takeScreenshot();
   else if (action === 'panel') togglePanel(arg);
+  else if (action === 'ai-ask') { const key = openAI(); run('ai-insert', key, String(arg || '') + '\n'); }
   else if (action === 'rename-bookmark' || action === 'edit-bookmark') openBookmarkDialog(arg);
   else if (action === 'rename-folder') { const f = S.folders.find((x) => x.id === arg); if (f) renameFolder(f); }
   else if (action === 'new-folder') newFolder(arg || null);
@@ -1454,6 +1555,7 @@ new ResizeObserver(() => {
   document.documentElement.style.setProperty('--chrome-h', hgt + 'px');
   run('chrome-height', hgt);
   if (SG.open) sgPosition();
+  reportAI();
 }).observe(chrome);
 
 $('#empty-hint').textContent = 'Or press ' + mod + '+T anywhere.';

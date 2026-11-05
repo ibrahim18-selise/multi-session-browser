@@ -56,6 +56,9 @@
         <button class="icon-btn" type="button" data-panel="history" aria-label="History" title="History">
           <svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="5.5"/><path d="M8 5v3l2 1.5"/></svg>
         </button>
+        <button class="icon-btn ai-btn" type="button" data-panel="ai" aria-label="AI assistant" title="AI assistant: Claude, ChatGPT, Gemini">
+          <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 2l1.3 3.4L12.7 6.7 9.3 8 8 11.4 6.7 8 3.3 6.7 6.7 5.4z"/><path d="M12.5 10.5l.6 1.4 1.4.6-1.4.6-.6 1.4-.6-1.4-1.4-.6 1.4-.6z"/></svg>
+        </button>
         <button class="icon-btn" type="button" data-panel="passwords" aria-label="Passwords" title="Saved passwords">
           <svg viewBox="0 0 16 16" aria-hidden="true"><rect x="3" y="7" width="10" height="6.5" rx="1.6"/><path d="M5.5 7V5a2.5 2.5 0 0 1 5 0v2"/></svg>
         </button>
@@ -106,12 +109,14 @@
   <div id="suggest" hidden role="listbox" aria-label="Suggestions"></div>
 
   <aside id="panel" hidden aria-label="Side panel">
+    <div id="panel-resize" title="Drag to resize"></div>
     <div class="panel-head">
       <div class="seg" role="tablist" aria-label="Side panel sections">
         <button type="button" role="tab" data-seg="clipboard">Clipboard</button>
         <button type="button" role="tab" data-seg="bookmarks">Bookmarks</button>
         <button type="button" role="tab" data-seg="history">History</button>
         <button type="button" role="tab" data-seg="passwords">Passwords</button>
+        <button type="button" role="tab" data-seg="ai">AI</button>
       </div>
       <button id="panel-close" class="icon-btn" type="button" aria-label="Close side panel" title="Close">
         <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4 4l8 8M12 4l-8 8"/></svg>
