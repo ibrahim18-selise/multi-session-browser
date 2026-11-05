@@ -20,7 +20,12 @@ const SEARCH_ENGINES = {
   brave: { name: 'Brave Search', url: 'https://search.brave.com/search?q=' }
 };
 const THEMES = ['system', 'arctic', 'ocean', 'minimal', 'galaxy'];
-const DEFAULT_SETTINGS = { searchEngine: 'google', theme: 'system', bookmarksBar: true, offerPasswords: true };
+const AI_SITES = {
+  claude: { name: 'Claude', url: 'https://claude.ai/new' },
+  chatgpt: { name: 'ChatGPT', url: 'https://chatgpt.com/' },
+  gemini: { name: 'Gemini', url: 'https://gemini.google.com/app' }
+};
+const DEFAULT_SETTINGS = { searchEngine: 'google', theme: 'system', bookmarksBar: true, offerPasswords: true, aiProvider: 'claude' };
 const isMac = process.platform === 'darwin';
 
 // Electron 30+ has WebContentsView. The Windows 7 build runs on Electron 22,
@@ -149,6 +154,7 @@ function loadState() {
     state.settings = Object.assign({}, DEFAULT_SETTINGS, raw.settings && typeof raw.settings === 'object' ? raw.settings : {});
     if (!SEARCH_ENGINES[state.settings.searchEngine]) state.settings.searchEngine = 'google';
     if (THEMES.indexOf(state.settings.theme) < 0) state.settings.theme = 'system';
+    if (!AI_SITES[state.settings.aiProvider]) state.settings.aiProvider = 'claude';
   } catch { /* first run or unreadable file: start fresh */ }
 }
 
@@ -323,6 +329,10 @@ function createView(tab) {
     } else if (p.selectionText) {
       items.push({ label: 'Copy', click: () => wc.copy() }, { type: 'separator' });
     }
+    if (p.selectionText && p.selectionText.trim()) {
+      const ai = AI_SITES[state.settings.aiProvider] || AI_SITES.claude;
+      items.push({ label: 'Ask ' + ai.name + ' about this', click: () => ui('ai-ask', p.selectionText.slice(0, 20000)) }, { type: 'separator' });
+    }
     items.push(
       { label: 'Back', enabled: n.canBack(), click: () => n.back() },
       { label: 'Forward', enabled: n.canForward(), click: () => n.forward() },
@@ -362,6 +372,7 @@ function layout() {
     const show = id === state.activeId && !overlay && !isNewTab(id);
     showView(view, show ? { x: 0, y: chromeHeight, width: Math.max(0, width - panelWidth), height: Math.max(0, height - chromeHeight) } : null);
   }
+  layoutAI();
 }
 
 function unmount(id) {
@@ -678,6 +689,7 @@ function setSetting(key, value) {
   if (key === 'searchEngine' && SEARCH_ENGINES[value]) s.searchEngine = value;
   else if (key === 'theme' && THEMES.indexOf(value) >= 0) { s.theme = value; applyTheme(); }
   else if (key === 'bookmarksBar' || key === 'offerPasswords') s[key] = !!value;
+  else if (key === 'aiProvider' && AI_SITES[value]) s.aiProvider = value;
   else return false;
   saveState();
   push();
@@ -1477,6 +1489,188 @@ function showAppMenu() {
   Menu.buildFromTemplate(template).popup({ window: win });
 }
 
+/* ---------- AI side panel ---------- */
+// Claude, ChatGPT and Gemini load as their real websites in the side panel.
+// Each has its own saved sign-in, separate from the tabs.
+
+const aiViews = new Map();
+let aiShown = null;
+let aiRect = null;
+
+const FOCUS_COMPOSER = [
+  '(function () {',
+  "  var picks = ['#prompt-textarea', 'div.ProseMirror[contenteditable=\"true\"]', 'rich-textarea [contenteditable=\"true\"]', '[contenteditable=\"true\"]', 'textarea', '[role=\"textbox\"]'];",
+  '  var el = null;',
+  '  for (var i = 0; i < picks.length && !el; i++) {',
+  '    var list = Array.prototype.slice.call(document.querySelectorAll(picks[i])).filter(function (e) { var r = e.getBoundingClientRect(); return r.width > 40 && r.height > 8; });',
+  '    if (list.length) el = list[list.length - 1];',
+  '  }',
+  '  if (!el) return false;',
+  '  el.focus();',
+  '  if (el.isContentEditable) { var range = document.createRange(); range.selectNodeContents(el); range.collapse(false); var sel = window.getSelection(); sel.removeAllRanges(); sel.addRange(range); }',
+  '  else if (typeof el.selectionStart === "number") { el.selectionStart = el.selectionEnd = el.value.length; }',
+  '  return true;',
+  '})()'
+].join('\n');
+
+function aiView(key) {
+  if (aiViews.has(key)) return aiViews.get(key);
+  const site = AI_SITES[key];
+  const ses = session.fromPartition('persist:ai-' + key);
+  hardenSession(ses, 'ai-' + key);
+  const view = makeView({ session: ses, sandbox: true, contextIsolation: true, nodeIntegration: false, spellcheck: true });
+  view.setBackgroundColor('#FFFFFF');
+  attachView(view);
+  showView(view, null);
+  const wc = view.webContents;
+  wc.setWindowOpenHandler(({ url, disposition }) => {
+    if (disposition === 'new-window') {
+      // Sign-in popups stay in the assistant's own session.
+      return { action: 'allow', overrideBrowserWindowOptions: { autoHideMenuBar: true, webPreferences: { session: ses, sandbox: true } } };
+    }
+    openUrl(url, 'new');
+    return { action: 'deny' };
+  });
+  wc.on('context-menu', (_e, p) => {
+    const items = [];
+    if (p.linkURL) items.push({ label: 'Open link in new tab', click: () => openUrl(p.linkURL, 'new') }, { label: 'Copy link address', click: () => clipboard.writeText(p.linkURL) }, { type: 'separator' });
+    if (p.isEditable) {
+      items.push(
+        { label: 'Cut', enabled: p.editFlags.canCut, click: () => wc.cut() },
+        { label: 'Copy', enabled: p.editFlags.canCopy, click: () => wc.copy() },
+        { label: 'Paste', enabled: p.editFlags.canPaste, click: () => wc.paste() },
+        { type: 'separator' }
+      );
+    } else if (p.selectionText) {
+      items.push({ label: 'Copy', click: () => wc.copy() }, { type: 'separator' });
+    }
+    items.push({ label: 'Reload', click: () => wc.reload() }, { label: 'Inspect element', click: () => { if (!wc.isDevToolsOpened()) wc.openDevTools({ mode: 'detach' }); wc.inspectElement(p.x, p.y); } });
+    Menu.buildFromTemplate(items).popup({ window: win });
+  });
+  wc.on('did-fail-load', (_e, code, desc, url, isMainFrame) => {
+    if (isMainFrame && code !== -3) toast(site.name + ' could not load (' + desc + '). Check your connection and reload.');
+  });
+  wc.loadURL(site.url).catch(() => { /* reported via did-fail-load */ });
+  aiViews.set(key, view);
+  return view;
+}
+
+function layoutAI() {
+  for (const [key, view] of aiViews) {
+    const show = key === aiShown && !overlay && !!aiRect && !!win && !win.isDestroyed();
+    showView(view, show ? aiRect : null);
+  }
+}
+
+function aiShow(key, rect) {
+  if (!AI_SITES[key] || !rect) return false;
+  const r = {
+    x: Math.max(0, Math.round(Number(rect.x) || 0)), y: Math.max(0, Math.round(Number(rect.y) || 0)),
+    width: Math.max(0, Math.round(Number(rect.width) || 0)), height: Math.max(0, Math.round(Number(rect.height) || 0))
+  };
+  aiShown = key;
+  aiRect = r;
+  aiView(key);
+  layoutAI();
+  if (state.settings.aiProvider !== key) { state.settings.aiProvider = key; saveState(); push(); }
+  return true;
+}
+
+function aiHide() {
+  aiShown = null;
+  layoutAI();
+  return true;
+}
+
+function waitLoaded(wc) {
+  if (!wc.isLoading()) return Promise.resolve();
+  return new Promise((resolve) => {
+    const done = () => { clearTimeout(timer); resolve(); };
+    const timer = setTimeout(done, 15000);
+    wc.once('did-stop-loading', done);
+  });
+}
+
+async function aiInsert(key, text) {
+  if (!AI_SITES[key]) return false;
+  const value = String(text || '').slice(0, 30000);
+  if (!value.trim()) return false;
+  const wc = aiView(key).webContents;
+  await waitLoaded(wc);
+  wc.focus();
+  let focused = false;
+  try { focused = await wc.executeJavaScript(FOCUS_COMPOSER); } catch { /* page not ready */ }
+  if (!focused) {
+    clipboard.writeText(value);
+    toast('Copied. Click the message box in ' + AI_SITES[key].name + ' and paste.');
+    return false;
+  }
+  wc.insertText(value);
+  return true;
+}
+
+async function aiSend(key, kind) {
+  const t = getTab(state.activeId);
+  const v = t && views.get(t.id);
+  if (!t || !v || isNewTab(t.id)) throw new Error('Open a web page first.');
+  const url = v.webContents.getURL();
+  const title = v.webContents.getTitle();
+  if (kind === 'selection') {
+    let sel = '';
+    try { sel = await v.webContents.executeJavaScript('window.getSelection ? String(window.getSelection()) : ""'); } catch { /* blocked page */ }
+    sel = String(sel || '').trim().slice(0, 20000);
+    if (!sel) throw new Error('Select some text on the page first.');
+    return aiInsert(key, sel + '\n(From ' + (title ? title + ', ' : '') + url + ')\n');
+  }
+  return aiInsert(key, (title ? title + '\n' : '') + url + '\n');
+}
+
+async function aiImage(key, dataUrl) {
+  if (!AI_SITES[key]) return false;
+  const img = nativeImage.createFromDataURL(String(dataUrl || ''));
+  if (img.isEmpty()) throw new Error('That image could not be read.');
+  const wc = aiView(key).webContents;
+  await waitLoaded(wc);
+  clipboard.writeImage(img);
+  wc.focus();
+  let focused = false;
+  try { focused = await wc.executeJavaScript(FOCUS_COMPOSER); } catch { /* page not ready */ }
+  if (!focused) { toast('Image copied. Click the message box in ' + AI_SITES[key].name + ' and paste.'); return false; }
+  wc.paste();
+  return true;
+}
+
+async function aiSignOut(key) {
+  const site = AI_SITES[key];
+  if (!site) return false;
+  const { response } = await dialog.showMessageBox(win, {
+    type: 'warning', buttons: ['Sign out', 'Cancel'], defaultId: 1, cancelId: 1,
+    message: 'Sign out of ' + site.name + ' in the side panel?',
+    detail: 'This clears its cookies and storage in this browser. Your tabs are not affected.'
+  });
+  if (response !== 0) return false;
+  const ses = session.fromPartition('persist:ai-' + key);
+  await ses.clearStorageData();
+  await ses.clearCache();
+  if (aiViews.has(key)) aiViews.get(key).webContents.loadURL(site.url).catch(() => {});
+  toast('Signed out of ' + site.name);
+  return true;
+}
+
+function aiMenu(key) {
+  const site = AI_SITES[key];
+  if (!site) return;
+  const view = aiViews.get(key);
+  Menu.buildFromTemplate([
+    { label: 'Start a new chat', click: () => aiView(key).webContents.loadURL(site.url).catch(() => {}) },
+    { label: 'Open in a tab', enabled: !!view, click: () => openUrl(view.webContents.getURL() || site.url, 'new') },
+    { label: 'Copy page address', enabled: !!view, click: () => clipboard.writeText(view.webContents.getURL()) },
+    { type: 'separator' },
+    { label: 'Developer tools for ' + site.name, enabled: !!view, click: () => view.webContents.openDevTools({ mode: 'detach' }) },
+    { label: 'Sign out of ' + site.name, click: () => aiSignOut(key) }
+  ]).popup({ window: win });
+}
+
 /* ---------- IPC ---------- */
 
 const commands = {
@@ -1544,7 +1738,14 @@ const commands = {
   'pw-copy': pwCopy,
   'pw-delete': pwDelete,
   'pw-unblock': pwUnblock,
-  'pin-set': setPin
+  'pin-set': setPin,
+  'ai-show': aiShow,
+  'ai-hide': aiHide,
+  'ai-insert': aiInsert,
+  'ai-send': aiSend,
+  'ai-image': aiImage,
+  'ai-reload': (key) => { const v = aiViews.get(key); if (v) v.webContents.reload(); return true; },
+  'ai-menu': aiMenu
 };
 
 ipcMain.handle('cmd', async (event, name, ...args) => {
@@ -1622,7 +1823,8 @@ function buildMenu() {
         { label: 'Clipboard', accelerator: 'CmdOrCtrl+Shift+Y', click: () => ui('panel', 'clipboard') },
         { label: 'Bookmarks', accelerator: 'CmdOrCtrl+Shift+O', click: () => ui('panel', 'bookmarks') },
         { label: 'History', accelerator: isMac ? 'Cmd+Y' : 'Ctrl+H', click: () => ui('panel', 'history') },
-        { label: 'Passwords', click: () => ui('panel', 'passwords') }
+        { label: 'Passwords', click: () => ui('panel', 'passwords') },
+        { label: 'AI assistant', accelerator: 'CmdOrCtrl+Shift+A', click: () => ui('panel', 'ai') }
       ]
     },
     {
@@ -1682,6 +1884,7 @@ function createWindow() {
   win.on('closed', () => {
     win = null;
     views.clear();
+    aiViews.clear();
     loaded.clear();
   });
 
