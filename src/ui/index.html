@@ -10,7 +10,7 @@
   <header id="chrome">
     <div id="tabstrip">
       <div id="tabs" role="tablist" aria-label="Open tabs"></div>
-      <button id="new-tab" class="icon-btn" type="button" aria-label="New tab" title="New tab">
+      <button id="new-tab" class="icon-btn" type="button" aria-label="New tab" title="New tab (right-click for a new session tab)">
         <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 3v10M3 8h10"/></svg>
       </button>
       <div class="grow"></div>
@@ -79,6 +79,7 @@
 
   <main id="ntp" hidden>
     <div class="ntp-inner">
+      <h1 class="ntp-title">Where to next?</h1>
       <p id="ntp-role" class="ntp-role"></p>
       <div class="ntp-search" id="ntp-search">
         <svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="7" cy="7" r="4.5"/><path d="M10.4 10.4L14 14"/></svg>
@@ -146,6 +147,14 @@
         <span>Sign-in</span>
         <select id="td-session"></select>
         <small>A new sign-in starts logged out. Sharing one keeps you logged in as that tab.</small>
+      </label>
+      <label class="field" id="td-where-row" hidden>
+        <span>Where</span>
+        <select id="td-where">
+          <option value="new">Open the site in a new tab</option>
+          <option value="this">Switch this tab to the new session</option>
+        </select>
+        <small id="td-where-note"></small>
       </label>
       <p id="td-shared-note" class="note" hidden></p>
       <div class="actions">

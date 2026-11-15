@@ -212,10 +212,11 @@ function renderTabs() {
 
 function tabElement(t, shareCount) {
   const isActive = t.id === S.activeId;
+  const plain = !t.name;
   const el = h('div', {
-    class: 'tab' + (isActive ? ' active' : '') + (t.loading ? ' loading' : ''),
+    class: 'tab' + (isActive ? ' active' : '') + (t.loading ? ' loading' : '') + (plain ? ' plain' : ''),
     'data-id': t.id, draggable: 'true', tabindex: isActive ? '0' : '-1', role: 'tab',
-    'aria-selected': String(isActive), title: t.name + '\n' + (isNewTabUrl(t.url) ? 'New tab' : (t.title || displayUrl(t.url)))
+    'aria-selected': String(isActive), title: (t.name ? t.name + '\n' : '') + (isNewTabUrl(t.url) ? 'New tab' : (t.title || displayUrl(t.url)))
   });
   el.style.setProperty('--c', t.color);
 
@@ -229,9 +230,11 @@ function tabElement(t, shareCount) {
   }
 
   const title = isNewTabUrl(t.url) ? 'New tab' : (t.title || displayUrl(t.url) || 'Loading');
-  el.append(mark, h('span', { class: 'labels' }, [h('span', { class: 'role', text: t.name }), h('span', { class: 'title', text: title })]));
+  el.append(mark, h('span', { class: 'labels' }, plain
+    ? h('span', { class: 'title', text: title })
+    : [h('span', { class: 'role', text: t.name }), h('span', { class: 'title', text: title })]));
 
-  if (shareCount > 1) {
+  if (shareCount > 1 && !plain) {
     const shared = h('span', {
       class: 'shared', html: ICONS.link,
       title: 'Shares its sign-in with ' + (shareCount - 1) + ' other tab' + (shareCount > 2 ? 's' : '')
@@ -239,7 +242,7 @@ function tabElement(t, shareCount) {
     shared.append(String(shareCount));
     el.append(shared);
   }
-  el.append(h('button', { class: 'close', type: 'button', tabindex: '-1', 'aria-label': 'Close ' + t.name, html: ICONS.close }));
+  el.append(h('button', { class: 'close', type: 'button', tabindex: '-1', 'aria-label': 'Close ' + (t.name || title), html: ICONS.close }));
   return el;
 }
 
@@ -285,11 +288,22 @@ function renderToolbar() {
   const avail = pwAvail.get(t.id);
   $('#pw-key').hidden = !(avail && originOf(t.url) === avail.origin);
 
-  $('#role-chip').textContent = t.name;
-  root.setProperty('--role', t.color);
-  root.setProperty('--on-role', onColor(t.color));
-  root.setProperty('--role-soft', rgba(t.color, 0.24));
-  document.title = t.name + ': ' + (ntp ? 'New tab' : (t.title || displayUrl(t.url)));
+  const chip = $('#role-chip');
+  const plain = !t.name;
+  chip.textContent = plain ? '+ Add session' : t.name;
+  chip.classList.toggle('add-session', plain);
+  chip.title = plain ? 'Add a session for this site, to sign in as another user' : 'Rename or recolor this tab';
+  document.body.classList.toggle('plain-tab', plain);
+  if (plain) {
+    root.removeProperty('--role');
+    root.removeProperty('--on-role');
+    root.removeProperty('--role-soft');
+  } else {
+    root.setProperty('--role', t.color);
+    root.setProperty('--on-role', onColor(t.color));
+    root.setProperty('--role-soft', rgba(t.color, 0.24));
+  }
+  document.title = (plain ? '' : t.name + ': ') + (ntp ? 'New tab' : (t.title || displayUrl(t.url)));
 }
 
 const folderName = (fid) => { const f = S.folders.find((x) => x.id === fid); return f ? f.name : 'Bookmarks bar'; };
@@ -319,7 +333,7 @@ function folderMenuAt(fid, el) {
 
 function renderBookmarksBar() {
   const bar = $('#bookmarks-bar');
-  const show = !!S.settings.bookmarksBar && S.tabs.length > 0;
+  const show = !!S.settings.bookmarksBar && S.tabs.length > 0 && (S.bookmarks.length > 0 || S.folders.length > 0);
   bar.hidden = !show;
   if (!show) return;
   const key = JSON.stringify([S.folders.map((f) => [f.id, f.name]), S.bookmarks.map((b) => [b.id, b.title, b.favicon, b.folderId])]);
@@ -386,10 +400,17 @@ async function renderNewTab(t, justOpened) {
   const counts = sessionCounts();
   const n = counts.get(t.sessionId) || 1;
   const role = $('#ntp-role');
-  role.replaceChildren(
-    h('span', { class: 'chip', text: t.name }),
-    h('span', { text: n > 1 ? 'Shares its sign-in with ' + (n - 1) + ' other tab' + (n > 2 ? 's' : '') : 'This tab has its own sign-in' })
-  );
+  if (!t.name) {
+    role.replaceChildren(
+      h('span', { text: 'Regular tab.' }),
+      h('button', { class: 'add', type: 'button', text: '+ Add session', title: 'Give this tab its own sign-in', onclick: () => openSessionDialog(t.id) })
+    );
+  } else {
+    role.replaceChildren(
+      h('span', { class: 'chip', text: t.name }),
+      h('span', { text: n > 1 ? 'Shares its sign-in with ' + (n - 1) + ' other tab' + (n > 2 ? 's' : '') : 'This tab has its own sign-in' })
+    );
+  }
   $('#ntp-input').placeholder = 'Search ' + engineName() + ' or type a web address';
   if (justOpened) $('#ntp-input').value = '';
 
@@ -1280,8 +1301,9 @@ function endDrag() {
 
 /* ---------- toolbar events ---------- */
 
-$('#new-tab').addEventListener('click', () => openTabDialog());
-$('#empty-open').addEventListener('click', () => openTabDialog());
+$('#new-tab').addEventListener('click', () => run('open-tab', {}));
+$('#new-tab').addEventListener('contextmenu', (e) => { e.preventDefault(); openTabDialog(); });
+$('#empty-open').addEventListener('click', () => run('open-tab', {}));
 $('#ws-btn').addEventListener('click', openWorkspaces);
 $('#back').addEventListener('click', () => run('back', S.activeId));
 $('#forward').addEventListener('click', () => run('forward', S.activeId));
@@ -1291,7 +1313,11 @@ $('#reload').addEventListener('click', () => {
 });
 $('#devtools').addEventListener('click', () => run('devtools', S.activeId));
 $('#menu-btn').addEventListener('click', () => run('app-menu'));
-$('#role-chip').addEventListener('click', () => S.activeId && openTabDialog(S.activeId));
+$('#role-chip').addEventListener('click', () => {
+  const t = activeTab();
+  if (!t) return;
+  if (t.name) openTabDialog(t.id); else openSessionDialog(t.id);
+});
 $('#star').addEventListener('click', () => S.activeId && run('bm-toggle', S.activeId));
 $('#shot-btn').addEventListener('click', takeScreenshot);
 $('#pw-key').addEventListener('click', () => {
@@ -1405,8 +1431,8 @@ function sessionOptions() {
   const sel = $('#td-session');
   sel.replaceChildren(new Option('New sign-in (starts logged out)', 'new'));
   groups.forEach((names, id) => {
-    const unique = Array.from(new Set(names));
-    sel.append(new Option('Same as ' + unique.join(', '), id));
+    const unique = Array.from(new Set(names.filter(Boolean)));
+    sel.append(new Option(id === 'default' || !unique.length ? 'Same as regular tabs' : 'Same as ' + unique.join(', '), id));
   });
   sel.value = 'new';
 }
@@ -1421,10 +1447,35 @@ function defaultStartUrl() {
   } catch { return ''; }
 }
 
+let sessionFor = null;
+
+function openSessionDialog(id) {
+  const t = S.tabs.find((x) => x.id === id);
+  if (!t) return;
+  editingId = null;
+  sessionFor = t.id;
+  const host = hostOf(t.url);
+  $('#td-title').textContent = host ? 'Add a session for ' + host : 'Add a session';
+  $('#td-submit').textContent = 'Add session';
+  $('#td-name').value = '';
+  $('#td-url-row').hidden = true;
+  $('#td-session-row').hidden = true;
+  $('#td-shared-note').hidden = true;
+  $('#td-where-row').hidden = false;
+  $('#td-where').value = 'new';
+  $('#td-where-note').textContent = host
+    ? host + ' opens signed out in the new session, so you can sign in as another user. Your other tabs stay signed in.'
+    : 'The new session starts signed out. Your other tabs stay signed in.';
+  renderSwatches(nextColor());
+  openModal($('#tab-dialog')).then(() => $('#td-name').focus());
+}
+
 function openTabDialog(id) {
   const t = id ? S.tabs.find((x) => x.id === id) : null;
   editingId = t ? t.id : null;
-  $('#td-title').textContent = t ? 'Edit tab' : 'New tab';
+  sessionFor = null;
+  $('#td-where-row').hidden = true;
+  $('#td-title').textContent = t ? (t.name ? 'Edit tab' : 'Name this tab') : 'New session tab';
   $('#td-submit').textContent = t ? 'Save changes' : 'Open tab';
   $('#td-name').value = t ? t.name : '';
   $('#td-url-row').hidden = !!t;
@@ -1449,7 +1500,14 @@ $('#td-form').addEventListener('submit', async (e) => {
   if (!name) { $('#td-name').focus(); return; }
   const color = selectedColor();
   const d = $('#tab-dialog');
-  if (editingId) {
+  if (sessionFor) {
+    const t = S.tabs.find((x) => x.id === sessionFor);
+    const where = $('#td-where').value;
+    d.close();
+    if (!t) return;
+    if (where === 'this') await run('tab-to-session', t.id, { name, color });
+    else await run('open-tab', { name, color, url: isNewTabUrl(t.url) ? '' : t.url });
+  } else if (editingId) {
     await run('update-tab', editingId, { name, color });
     d.close();
   } else {
@@ -1530,7 +1588,9 @@ api.on('pw-available', (info) => {
   renderToolbar();
 });
 api.on('ui', (action, arg) => {
-  if (action === 'new-tab') openTabDialog();
+  if (action === 'new-tab') run('open-tab', {});
+  else if (action === 'new-session') openTabDialog();
+  else if (action === 'add-session') openSessionDialog(arg || S.activeId);
   else if (action === 'edit-tab') openTabDialog(arg);
   else if (action === 'workspaces') openWorkspaces();
   else if (action === 'screenshot') takeScreenshot();
