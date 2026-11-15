@@ -19,13 +19,16 @@ const SEARCH_ENGINES = {
   duckduckgo: { name: 'DuckDuckGo', url: 'https://duckduckgo.com/?q=' },
   brave: { name: 'Brave Search', url: 'https://search.brave.com/search?q=' }
 };
-const THEMES = ['system', 'arctic', 'ocean', 'minimal', 'galaxy'];
+const THEMES = ['coolors', 'system', 'arctic', 'ocean', 'minimal', 'galaxy'];
+const UI_VERSION = 3;
+const DEFAULT_SESSION = 'default';
+const PLAIN_COLOR = '#9AA0A6';
 const AI_SITES = {
   claude: { name: 'Claude', url: 'https://claude.ai/new' },
   chatgpt: { name: 'ChatGPT', url: 'https://chatgpt.com/' },
   gemini: { name: 'Gemini', url: 'https://gemini.google.com/app' }
 };
-const DEFAULT_SETTINGS = { searchEngine: 'google', theme: 'system', bookmarksBar: true, offerPasswords: true, aiProvider: 'claude' };
+const DEFAULT_SETTINGS = { uiVersion: UI_VERSION, searchEngine: 'google', theme: 'coolors', bookmarksBar: true, offerPasswords: true, aiProvider: 'claude' };
 const isMac = process.platform === 'darwin';
 
 // Electron 30+ has WebContentsView. The Windows 7 build runs on Electron 22,
@@ -132,7 +135,7 @@ function loadState() {
     state.tabs = (Array.isArray(raw.tabs) ? raw.tabs : [])
       .filter((t) => t && typeof t.id === 'string' && typeof t.sessionId === 'string')
       .map((t) => ({
-        id: t.id, sessionId: t.sessionId, name: cleanName(t.name) || 'Session',
+        id: t.id, sessionId: t.sessionId, name: cleanName(t.name) || (t.sessionId === DEFAULT_SESSION ? '' : 'Session'),
         color: validColor(t.color) ? t.color : COLORS[0], url: t.url || HOME_URL
       }));
     state.activeId = typeof raw.activeId === 'string' ? raw.activeId : null;
@@ -153,7 +156,8 @@ function loadState() {
     state.lastFolder = folderIds.has(raw.lastFolder) ? raw.lastFolder : null;
     state.settings = Object.assign({}, DEFAULT_SETTINGS, raw.settings && typeof raw.settings === 'object' ? raw.settings : {});
     if (!SEARCH_ENGINES[state.settings.searchEngine]) state.settings.searchEngine = 'google';
-    if (THEMES.indexOf(state.settings.theme) < 0) state.settings.theme = 'system';
+    if (THEMES.indexOf(state.settings.theme) < 0) state.settings.theme = 'coolors';
+    if (state.settings.uiVersion !== UI_VERSION) { state.settings.theme = 'coolors'; state.settings.uiVersion = UI_VERSION; }
     if (!AI_SITES[state.settings.aiProvider]) state.settings.aiProvider = 'claude';
   } catch { /* first run or unreadable file: start fresh */ }
 }
@@ -389,11 +393,14 @@ function unmount(id) {
 /* ---------- tab commands ---------- */
 
 function openTab({ url, name, color, sessionId } = {}, activate = true) {
+  // A tab opened without a name is a plain tab: it shares the regular session,
+  // like tabs in any other browser. Naming it creates a separate session.
+  const sid = typeof sessionId === 'string' && sessionId ? sessionId : (cleanName(name) ? uid() : DEFAULT_SESSION);
   const tab = {
     id: uid(),
-    sessionId: typeof sessionId === 'string' && sessionId ? sessionId : uid(),
-    name: cleanName(name) || `Session ${state.tabs.length + 1}`,
-    color: validColor(color) ? color : COLORS[state.tabs.length % COLORS.length],
+    sessionId: sid,
+    name: cleanName(name) || (sid === DEFAULT_SESSION ? '' : 'Session ' + (state.tabs.length + 1)),
+    color: validColor(color) ? color : (sid === DEFAULT_SESSION ? PLAIN_COLOR : COLORS[state.tabs.length % COLORS.length]),
     url: normalizeUrl(url)
   };
   state.tabs.push(tab);
@@ -432,9 +439,29 @@ function closeTab(id) {
     state.activeId = next ? next.id : null;
     if (next) ensureLoaded(next.id);
   }
+  if (!state.tabs.length && win && !win.isDestroyed()) { openTab({}, true); return; }
   layout();
   push();
   saveState();
+}
+
+function tabToSession(id, opts) {
+  const t = getTab(id);
+  if (!t) return false;
+  const v = views.get(id);
+  const url = isNewTab(id) ? NEWTAB : ((v && v.webContents.getURL()) || t.url);
+  unmount(id);
+  t.sessionId = uid();
+  t.name = cleanName(opts && opts.name) || 'Session ' + state.tabs.length;
+  t.color = validColor(opts && opts.color) ? opts.color : COLORS[state.tabs.length % COLORS.length];
+  t.url = url;
+  mountTab(t);
+  if (state.activeId === id) ensureLoaded(id);
+  layout();
+  push();
+  saveState();
+  toast('"' + t.name + '" now has its own sign-in. Sign in as that user.');
+  return true;
 }
 
 function closeOthers(id) {
@@ -508,7 +535,7 @@ async function clearSession(id) {
     buttons: ['Clear and reload', 'Cancel'],
     defaultId: 1,
     cancelId: 1,
-    message: `Sign "${t.name}" out of every site?`,
+    message: t.name ? `Sign "${t.name}" out of every site?` : 'Sign your regular tabs out of every site?',
     detail: 'This removes the cookies, site storage and cache for this session.' +
       (sharing.length > 1 ? ` ${sharing.length} tabs share this session and will all reload.` : '')
   });
@@ -517,7 +544,7 @@ async function clearSession(id) {
   await ses.clearStorageData();
   await ses.clearCache();
   for (const x of sharing) if (loaded.has(x.id)) views.get(x.id)?.webContents.reload();
-  toast(`Signed "${t.name}" out of every site`);
+  toast(t.name ? `Signed "${t.name}" out of every site` : 'Signed your regular tabs out of every site');
 }
 
 function showTabMenu(id) {
@@ -525,7 +552,8 @@ function showTabMenu(id) {
   if (!t) return;
   const others = state.tabs.length > 1;
   Menu.buildFromTemplate([
-    { label: 'Rename or recolor', click: () => ui('edit-tab', id) },
+    { label: t.name ? 'Rename or recolor' : 'Name this tab', click: () => ui('edit-tab', id) },
+    { label: 'Add a session for this site', click: () => ui('add-session', id) },
     { label: 'Duplicate (same sign-in)', click: () => duplicateTab(id) },
     { type: 'separator' },
     { label: 'Developer tools', click: () => toggleDevTools(id) },
@@ -583,7 +611,7 @@ function wsOpen(name) {
   if (!ws) throw new Error('That workspace no longer exists.');
   for (const t of [...state.tabs]) unmount(t.id);
   state.tabs = ws.tabs.map((t) => ({
-    id: uid(), sessionId: t.sessionId, name: cleanName(t.name) || 'Session',
+    id: uid(), sessionId: t.sessionId, name: cleanName(t.name) || (t.sessionId === DEFAULT_SESSION ? '' : 'Session'),
     color: validColor(t.color) ? t.color : COLORS[0], url: t.url || HOME_URL
   }));
   for (const t of state.tabs) mountTab(t);
@@ -1462,13 +1490,14 @@ function showAppMenu() {
     label: SEARCH_ENGINES[k].name, type: 'radio', checked: s.searchEngine === k, click: () => setSetting('searchEngine', k)
   }));
   const themes = [
-    ['system', 'Match my computer'], ['arctic', 'Arctic Frost'], ['ocean', 'Ocean Depths (dark)'],
+    ['coolors', 'Coolors (clean white)'], ['system', 'Match my computer'], ['arctic', 'Arctic Frost'], ['ocean', 'Ocean Depths (dark)'],
     ['minimal', 'Modern Minimalist'], ['galaxy', 'Midnight Galaxy (dark)']
   ].map((p) => ({ label: p[1], type: 'radio', checked: s.theme === p[0], click: () => setSetting('theme', p[0]) }));
   const template = [];
   if (t) {
     template.push(
-      { label: 'Rename or recolor this tab', click: () => ui('edit-tab', id) },
+      { label: 'Add a session for this site', click: () => ui('add-session', id) },
+      { label: t.name ? 'Rename or recolor this tab' : 'Name this tab', click: () => ui('edit-tab', id) },
       { label: 'Duplicate tab (same sign-in)', click: () => duplicateTab(id) },
       { label: 'Sign this tab out of every site', click: () => clearSession(id) },
       { type: 'separator' }
@@ -1476,6 +1505,7 @@ function showAppMenu() {
   }
   template.push(
     { label: 'New tab', accelerator: 'CmdOrCtrl+T', click: () => ui('new-tab') },
+    { label: 'New session tab', accelerator: 'CmdOrCtrl+Shift+N', click: () => ui('new-session') },
     { label: 'Workspaces', click: () => ui('workspaces') },
     { type: 'separator' },
     { label: 'Search engine', submenu: engines },
@@ -1739,6 +1769,7 @@ const commands = {
   'pw-delete': pwDelete,
   'pw-unblock': pwUnblock,
   'pin-set': setPin,
+  'tab-to-session': tabToSession,
   'ai-show': aiShow,
   'ai-hide': aiHide,
   'ai-insert': aiInsert,
@@ -1787,6 +1818,8 @@ function buildMenu() {
       label: 'File',
       submenu: [
         { label: 'New tab', accelerator: 'CmdOrCtrl+T', click: () => ui('new-tab') },
+        { label: 'New session tab', accelerator: 'CmdOrCtrl+Shift+N', click: () => ui('new-session') },
+        { label: 'Add a session for this site', click: () => state.activeId && ui('add-session', state.activeId) },
         { label: 'Duplicate tab (same sign-in)', accelerator: 'CmdOrCtrl+Shift+D', click: () => state.activeId && duplicateTab(state.activeId) },
         { label: 'Close tab', accelerator: 'CmdOrCtrl+W', click: () => state.activeId && closeTab(state.activeId) },
         { type: 'separator' },
@@ -1860,7 +1893,7 @@ function createWindow() {
     show: false,
     title: 'Multi-Session Browser',
     autoHideMenuBar: true,
-    backgroundColor: '#DCE7F5',
+    backgroundColor: '#F5F5F5',
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
@@ -1891,6 +1924,7 @@ function createWindow() {
   for (const t of state.tabs) mountTab(t);
   if (!getTab(state.activeId)) state.activeId = state.tabs[0] ? state.tabs[0].id : null;
   if (state.activeId) ensureLoaded(state.activeId);
+  if (!state.tabs.length) openTab({}, true);
   layout();
 }
 
