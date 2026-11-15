@@ -94,6 +94,11 @@ rm -rf "/Applications/Multi-Session Browser.app"
 
 ## What it does
 
+### Regular tabs, and sessions when you need them
+- The browser opens straight to a new tab, ready to search. New tabs (the + button or Ctrl+T) are regular tabs that share one sign-in, like any other browser.
+- When you want to sign in to a site as someone else, click **+ Add session** in the address bar (or right-click a tab and choose "Add a session for this site"). Name it (Admin, Customer, Reviewer), pick a color, and choose whether the site opens in a new tab or this tab switches to the new session. The site opens signed out, so you can sign in as the other user while your other tabs stay signed in.
+- Right-click the + button, or press Ctrl+Shift+N, to open a new session tab straight away.
+
 ### Tabs with separate sign-ins
 - Each tab gets its own cookies, storage and cache, so one window can hold several logged-in roles on the same site.
 - Tabs can also share a sign-in. Pick "Same as ..." when opening a tab, use "Duplicate (same sign-in)", or open a link in a new tab. Shared tabs show a link badge with the number of tabs in that session.
@@ -149,7 +154,7 @@ rm -rf "/Applications/Multi-Session Browser.app"
 - If Google sign-in refuses to work inside the panel, sign in with email instead. On Windows 7 the assistant websites may not support the older engine.
 
 ### Look and feel
-- Four themes from Claude's theme set: Arctic Frost (light) and Ocean Depths (dark) by default, following your computer's light or dark setting, plus Modern Minimalist and Midnight Galaxy. Change it in the menu, under Appearance.
+- The default look takes its style from coolors.co: clean white surfaces, black type in Inter, and blue actions. Claude's themes (Arctic Frost, Ocean Depths, Modern Minimalist, Midnight Galaxy) and "Match my computer" are still in the menu, under Appearance.
 - Developer tools per tab (F12 on Windows, Alt+Cmd+I on Mac), plus "Inspect element" on right click.
 - Site permission requests (camera, microphone, location, notifications) are asked per session instead of granted silently.
 
@@ -157,7 +162,7 @@ rm -rf "/Applications/Multi-Session Browser.app"
 
 Ctrl is Cmd on Mac.
 
-- Ctrl+T new tab, Ctrl+W close tab, Ctrl+Shift+D duplicate with the same sign-in
+- Ctrl+T new tab, Ctrl+Shift+N new session tab, Ctrl+W close tab, Ctrl+Shift+D duplicate with the same sign-in
 - Ctrl+L address bar, Ctrl+R reload, Ctrl+Shift+R reload without cache
 - Ctrl+Tab and Ctrl+Shift+Tab switch tabs, Ctrl+1 to Ctrl+8 jump to a tab, Ctrl+9 last tab
 - Ctrl+D bookmark this page, Ctrl+Shift+B bookmarks bar, Ctrl+Shift+O bookmarks panel
